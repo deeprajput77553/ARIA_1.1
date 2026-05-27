@@ -1,0 +1,7 @@
+{
+  "user_name": "Assistant",
+  "operating_system": "Windows",
+  "known_facts": [
+    "I know, that's your name!"
+  ]
+}
