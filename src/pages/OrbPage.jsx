@@ -1060,6 +1060,8 @@ function OrbPage({ messages, setMessages, connected, wsRef, profile, orbSentProm
         }));
     };
 
+
+
     // Text to Speech
     const speakText = (text) => {
         if (!text) return;
@@ -1701,21 +1703,6 @@ function OrbPage({ messages, setMessages, connected, wsRef, profile, orbSentProm
 
             {/* Status overlay */}
             <div className="orb-status-display-group">
-                <div className={`orb-status-badge ${
-                    systemStatus === 'SPEAKING' ? 'speak' :
-                    (systemStatus === 'ANALYZING' || systemStatus === 'THINKING') ? 'listen' :
-                    ''
-                }`}>
-                    {systemStatus === 'SPEAKING' ? 'Speaking' :
-                     (systemStatus === 'ANALYZING' || systemStatus === 'THINKING') ? 'Analyzing' :
-                     systemStatus === 'PAUSED' ? 'Paused' : 'Listening'}
-                </div>
-                <div className="orb-status-title-text">
-                    {systemStatus === 'SPEAKING' ? 'SPEAKING...' :
-                     systemStatus === 'ANALYZING' ? 'ANALYZING...' :
-                     systemStatus === 'THINKING' ? 'THINKING...' :
-                     systemStatus === 'PAUSED' ? 'PAUSED' : 'LISTENING...'}
-                </div>
                 {(systemStatus === 'SPEAKING' || systemStatus === 'ANALYZING' || systemStatus === 'THINKING') && (
                     <button className="orb-stop-response-btn" onClick={handleStopResponse}>
                         <svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor" style={{ marginRight: '6px' }}>
@@ -1789,6 +1776,8 @@ function OrbPage({ messages, setMessages, connected, wsRef, profile, orbSentProm
                     </div>
                 </div>
             )}
+
+
 
             {/* Controls panel */}
             <div className="orb-controls-floating-panel">

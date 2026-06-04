@@ -75,18 +75,39 @@ function detectComplexIntent(prompt) {
     return null;
 }
 
+function detectBugOrComplaint(prompt) {
+    const p = prompt.toLowerCase().trim();
+    if (/\b(not|no|fail|failed|error|bug|issue|broken|won't|wont|cannot|can't|unable)\b/i.test(p) &&
+        /\b(image|picture|diagram|photo|illustration|drawing|generation|generate|create|make|work|working)\b/i.test(p)) {
+        return makeRoute('reactive', 'low', 'complaint_or_issue', 'Address the issue or complaint from the user about image generation not working.', 0.99);
+    }
+    return null;
+}
+
 function detectImageIntent(prompt) {
-    const p = prompt.toLowerCase();
-    const isImageKeyword = /\b(image|picture|diagram|photo|illustration|drawing|concept chart)\b/i.test(p);
-    const isCreationKeyword = /\b(create|write|generate|build|make|draw|compile)\b/i.test(p);
+    const p = prompt.toLowerCase().trim();
     
     // Skip if it contains docx/report keywords so document mode takes priority
     if (/\b(docx|pdf|doc|report|manual|handbook|guide)\b/i.test(p)) {
         return null;
     }
+
+    // Exclude complaints or questions about image generation
+    if (/\b(not|no|stop|why|failed|error|bug|issue|fail|broken|won't|wont|cannot|can't)\b/i.test(p)) {
+        return null;
+    }
+
+    const isImageKeyword = /\b(image|picture|diagram|photo|illustration|drawing|concept chart)\b/i.test(p);
+    const isCreationKeyword = /\b(create|write|generate|build|make|draw|compile|paint|render|show)\b/i.test(p);
     
-    if (isImageKeyword && isCreationKeyword) {
-        const cleanPrompt = prompt.replace(/\b(please|can u|can you|generate|create|make|draw|compile|write|a|an)\b/gi, '').trim();
+    // Pattern like "image of...", "photo of...", "picture of..."
+    const isImageOfPattern = /\b(image|picture|diagram|photo|illustration|drawing|concept chart)\s+of\b/i.test(p);
+    
+    // Starting with draw/paint/render
+    const isDrawStart = /^(draw|paint|render)\b/i.test(p);
+
+    if ((isImageKeyword && isCreationKeyword) || isImageOfPattern || isDrawStart) {
+        const cleanPrompt = prompt.replace(/\b(please|can u|can you|generate|create|make|draw|paint|render|show|compile|write|a|an)\b/gi, '').trim();
         return makeRoute('feature', 'low', 'image_generation', 'Generate a standalone image.', 0.99, 'generate_image', { prompt: cleanPrompt || prompt });
     }
     return null;
@@ -130,6 +151,26 @@ function normalizeRouterResponse(raw) {
         normalized.mode = 'subagent';
     }
 
+    // Force fallback: If mode is feature, but featureName is null/undefined/empty/"null"
+    if (normalized.mode === 'feature' && (!normalized.featureName || normalized.featureName === 'null')) {
+        const intentLower = normalized.intent.toLowerCase();
+        const extraLower = normalized.extraPrompt.toLowerCase();
+        
+        if (intentLower.includes('image') || intentLower.includes('picture') || intentLower.includes('draw') || intentLower.includes('diagram') ||
+            extraLower.includes('image') || extraLower.includes('picture') || extraLower.includes('draw') || extraLower.includes('diagram')) {
+            normalized.featureName = 'generate_image';
+            if (!normalized.featureParams || !normalized.featureParams.prompt) {
+                normalized.featureParams = { prompt: normalized.extraPrompt || 'image' };
+            }
+        } else if (intentLower.includes('search') || intentLower.includes('web') || intentLower.includes('google') ||
+                   extraLower.includes('search') || extraLower.includes('web') || extraLower.includes('google')) {
+            normalized.featureName = 'websearch';
+            if (!normalized.featureParams || !normalized.featureParams.query) {
+                normalized.featureParams = { query: normalized.extraPrompt || 'web search' };
+            }
+        }
+    }
+
     return normalized;
 }
 
@@ -150,7 +191,7 @@ export class RouterLayer {
         Logger.stage('RouterLayer', 'Routing prompt...');
 
         // 1. Pre-router — zero LLM latency
-        const preRoute = detectDocumentIntent(ctx.enrichedPrompt) || detectVersionCheck(ctx.enrichedPrompt) || detectComplexIntent(ctx.enrichedPrompt) || detectImageIntent(ctx.enrichedPrompt);
+        const preRoute = detectBugOrComplaint(ctx.enrichedPrompt) || detectDocumentIntent(ctx.enrichedPrompt) || detectVersionCheck(ctx.enrichedPrompt) || detectComplexIntent(ctx.enrichedPrompt) || detectImageIntent(ctx.enrichedPrompt);
         if (preRoute) {
             ctx.routeDecision = preRoute;
             bus.emit(AGENT_EVENTS.PRE_ROUTER_HIT, { route: preRoute });
