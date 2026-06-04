@@ -28,6 +28,38 @@ function WorkbenchPage({ pipelineState, connected, workspaceDir, profile, logs, 
     // Preview
     const docxContainerRef = useRef(null);
 
+    // --- Terminal State ---
+    const [terminalLogs, setTerminalLogs] = useState([
+        { text: "Welcome to Aria Studio Interactive Terminal\n", isSystem: true },
+        { text: `Active Workspace: ${workspaceDir}\n\n`, isSystem: true }
+    ]);
+    const [terminalInput, setTerminalInput] = useState('');
+    const [terminalRunning, setTerminalRunning] = useState(false);
+    const [terminalHistory, setTerminalHistory] = useState([]);
+    const [historyIndex, setHistoryIndex] = useState(-1);
+    const terminalEndRef = useRef(null);
+
+    const firstWorkspaceLoad = useRef(true);
+
+    useEffect(() => {
+        if (terminalEndRef.current) {
+            terminalEndRef.current.scrollIntoView({ behavior: 'smooth' });
+        }
+    }, [terminalLogs, activeTab]);
+
+    useEffect(() => {
+        if (workspaceDir) {
+            if (firstWorkspaceLoad.current) {
+                firstWorkspaceLoad.current = false;
+                return;
+            }
+            setTerminalLogs(prev => [
+                ...prev,
+                { text: `[Workspace directory updated to: ${workspaceDir}]\n`, isSystem: true }
+            ]);
+        }
+    }, [workspaceDir]);
+
     // --- Memory Facts State ---
     const [facts, setFacts] = useState(profile?.known_facts || []);
     const [newFact, setNewFact] = useState('');
@@ -119,10 +151,26 @@ function WorkbenchPage({ pipelineState, connected, workspaceDir, profile, logs, 
             }
         };
 
+        const handleTerminalOutput = (e) => {
+            const { data, isError } = e.detail;
+            setTerminalLogs(prev => [...prev, { text: data, isError }]);
+        };
+
+        const handleTerminalDone = (e) => {
+            const { code } = e.detail;
+            setTerminalLogs(prev => [
+                ...prev,
+                { text: `\n[Process exited with code ${code === null ? 'terminated' : code}]\n`, isSystem: true }
+            ]);
+            setTerminalRunning(false);
+        };
+
         window.addEventListener('workbench:files_list', handleFilesList);
         window.addEventListener('workbench:save_done', handleSaveDone);
         window.addEventListener('workbench:create_done', handleCreateDone);
         window.addEventListener('workbench:execute_done', handleExecuteDone);
+        window.addEventListener('workbench:terminal_output', handleTerminalOutput);
+        window.addEventListener('workbench:terminal_done', handleTerminalDone);
 
         // Fetch plugins schema if already synced in parent
         // App.jsx will dispatch custom event on system:sync
@@ -142,6 +190,8 @@ function WorkbenchPage({ pipelineState, connected, workspaceDir, profile, logs, 
             window.removeEventListener('workbench:create_done', handleCreateDone);
             window.removeEventListener('workbench:execute_done', handleExecuteDone);
             window.removeEventListener('system:sync_data', handleSystemSync);
+            window.removeEventListener('workbench:terminal_output', handleTerminalOutput);
+            window.removeEventListener('workbench:terminal_done', handleTerminalDone);
         };
     }, [editContent, selectedPlugin]);
 
@@ -466,6 +516,76 @@ function WorkbenchPage({ pipelineState, connected, workspaceDir, profile, logs, 
         }));
     };
 
+    // --- 4b. Terminal Actions ---
+    const handleRunTerminalCommand = (e) => {
+        if (e) e.preventDefault();
+        const cmd = terminalInput.trim();
+        if (!cmd) return;
+
+        if (typeof window !== 'undefined' && window.playUISound) {
+            window.playUISound('click');
+        }
+
+        setTerminalHistory(prev => [...prev, cmd]);
+        setHistoryIndex(-1);
+
+        setTerminalLogs(prev => [...prev, { text: `$ ${cmd}\n`, isCommand: true }]);
+        setTerminalInput('');
+        setTerminalRunning(true);
+
+        if (connected && wsRef.current) {
+            wsRef.current.send(JSON.stringify({
+                type: 'workbench:run_terminal_command',
+                command: cmd
+            }));
+        } else {
+            setTerminalLogs(prev => [...prev, { text: "Error: WebSocket is not connected.\n", isError: true }]);
+            setTerminalRunning(false);
+        }
+    };
+
+    const handleKeyDown = (e) => {
+        if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            if (terminalHistory.length === 0) return;
+            const newIndex = historyIndex === -1 ? terminalHistory.length - 1 : Math.max(0, historyIndex - 1);
+            setHistoryIndex(newIndex);
+            setTerminalInput(terminalHistory[newIndex]);
+        } else if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            if (historyIndex === -1) return;
+            const newIndex = historyIndex + 1;
+            if (newIndex >= terminalHistory.length) {
+                setHistoryIndex(-1);
+                setTerminalInput('');
+            } else {
+                setHistoryIndex(newIndex);
+                setTerminalInput(terminalHistory[newIndex]);
+            }
+        }
+    };
+
+    const handleKillTerminalProcess = () => {
+        if (typeof window !== 'undefined' && window.playUISound) {
+            window.playUISound('error');
+        }
+        if (connected && wsRef.current) {
+            wsRef.current.send(JSON.stringify({
+                type: 'workbench:kill_terminal_command'
+            }));
+        }
+    };
+
+    const handleClearTerminal = () => {
+        if (typeof window !== 'undefined' && window.playUISound) {
+            window.playUISound('click');
+        }
+        setTerminalLogs([
+            { text: "Terminal cleared.\n", isSystem: true },
+            { text: `Active Workspace: ${workspaceDir}\n\n`, isSystem: true }
+        ]);
+    };
+
     // --- 5. Logs Filters ---
     const filteredLogs = logs.filter(l => {
         const matchesLevel = logFilter === 'all' || 
@@ -650,7 +770,13 @@ function WorkbenchPage({ pipelineState, connected, workspaceDir, profile, logs, 
                     className={`workbench-tab ${activeTab === 'logs' ? 'active' : ''}`}
                     onClick={() => setActiveTab('logs')}
                 >
-                    <Terminal size={16} /> Live Logs ({filteredLogs.length})
+                    <FileText size={16} /> Live Logs ({filteredLogs.length})
+                </button>
+                <button 
+                    className={`workbench-tab ${activeTab === 'terminal' ? 'active' : ''}`}
+                    onClick={() => setActiveTab('terminal')}
+                >
+                    <Terminal size={16} /> Terminal
                 </button>
             </div>
 
@@ -1262,6 +1388,66 @@ function WorkbenchPage({ pipelineState, connected, workspaceDir, profile, logs, 
                                     ))}
                                 </div>
                             )}
+                        </div>
+                    </div>
+                )}
+
+                {/* 6. INTERACTIVE TERMINAL TAB */}
+                {activeTab === 'terminal' && (
+                    <div className="workbench-terminal-panel">
+                        <div className="terminal-panel-header">
+                            <div className="terminal-header-title-group">
+                                <Terminal size={14} className="text-cyan" />
+                                <span>Aria Interactive Shell Terminal</span>
+                                {terminalRunning && (
+                                    <span className="terminal-active-badge">
+                                        <span className="pulse-dot"></span> RUNNING
+                                    </span>
+                                )}
+                            </div>
+                            <div className="terminal-header-actions">
+                                {terminalRunning && (
+                                    <button className="terminal-btn-action kill" onClick={handleKillTerminalProcess}>
+                                        <X size={12} /> Kill Process
+                                    </button>
+                                )}
+                                <button className="terminal-btn-action clear" onClick={handleClearTerminal}>
+                                    <Trash2 size={12} /> Clear Console
+                                </button>
+                            </div>
+                        </div>
+                        <div className="terminal-panel-body">
+                            <div className="terminal-scroller">
+                                {terminalLogs.map((log, idx) => {
+                                    let cls = "terminal-log-line";
+                                    if (log.isError) cls += " error";
+                                    if (log.isSystem) cls += " system";
+                                    if (log.isCommand) cls += " command";
+                                    return (
+                                        <div key={idx} className={cls}>
+                                            {log.text}
+                                        </div>
+                                    );
+                                })}
+                                <div ref={terminalEndRef} />
+                            </div>
+                            <form onSubmit={handleRunTerminalCommand} className="terminal-input-row">
+                                <span className="terminal-prompt-path" title={workspaceDir}>
+                                    {workspaceDir ? workspaceDir.split(/[\\/]/).pop() : 'workspace'} $
+                                </span>
+                                <input 
+                                    type="text" 
+                                    className="terminal-command-input"
+                                    value={terminalInput}
+                                    onChange={(e) => setTerminalInput(e.target.value)}
+                                    onKeyDown={handleKeyDown}
+                                    placeholder={terminalRunning ? "Running process... (sending will abort current)" : "Type command and press Enter..."}
+                                    autoFocus
+                                />
+                                <button type="submit" className="terminal-send-btn" disabled={!terminalInput.trim() || !connected}>
+                                    <Play size={12} />
+                                </button>
+                            </form>
                         </div>
                     </div>
                 )}

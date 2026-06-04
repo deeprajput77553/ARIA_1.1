@@ -506,6 +506,12 @@ function App() {
                     else if (evt.type === 'workbench:files_list') {
                         window.dispatchEvent(new CustomEvent('workbench:files_list', { detail: evt.payload.files }));
                     }
+                    else if (evt.type === 'workbench:terminal_output') {
+                        window.dispatchEvent(new CustomEvent('workbench:terminal_output', { detail: evt.payload }));
+                    }
+                    else if (evt.type === 'workbench:terminal_done') {
+                        window.dispatchEvent(new CustomEvent('workbench:terminal_done', { detail: evt.payload }));
+                    }
                     else if (evt.type === 'workbench:save_done') {
                         window.dispatchEvent(new CustomEvent('workbench:save_done', { detail: evt.payload }));
                     }

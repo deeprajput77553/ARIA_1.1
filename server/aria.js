@@ -55,6 +55,7 @@ const pipeline = new Pipeline()
 let WORKSPACE_DIR = process.cwd();
 let activeAgentContext = null;
 let activeAgentSocket = null;
+const activeProcesses = new Map();
 
 // ── Live Dashboard (HTTP + WebSocket) ────────────────────────────────────
 const WS_PORT    = 4200;
@@ -209,6 +210,59 @@ async function handleClientMessage(socket, rawText) {
         else if (data.type === 'workbench:list_files') {
             const files = listWorkspaceFiles(WORKSPACE_DIR, WORKSPACE_DIR);
             sendWs(socket, { type: 'workbench:files_list', payload: { files } });
+        }
+        else if (data.type === 'workbench:run_terminal_command' && data.command) {
+            Logger.info(`[Terminal] User command execution requested: "${data.command}"`);
+            
+            // Kill any currently active process on this socket first
+            if (activeProcesses.has(socket)) {
+                try { activeProcesses.get(socket).kill(); } catch (e) {}
+            }
+
+            try {
+                const { exec } = await import('child_process');
+                const proc = exec(data.command, {
+                    cwd: WORKSPACE_DIR,
+                    shell: true,
+                    encoding: 'utf-8'
+                });
+                
+                activeProcesses.set(socket, proc);
+
+                proc.stdout.on('data', (chunk) => {
+                    sendWs(socket, { type: 'workbench:terminal_output', payload: { data: chunk } });
+                });
+
+                proc.stderr.on('data', (chunk) => {
+                    sendWs(socket, { type: 'workbench:terminal_output', payload: { data: chunk, isError: true } });
+                });
+
+                proc.on('close', (code) => {
+                    activeProcesses.delete(socket);
+                    sendWs(socket, { type: 'workbench:terminal_done', payload: { code } });
+                });
+                
+                proc.on('error', (err) => {
+                    activeProcesses.delete(socket);
+                    sendWs(socket, { type: 'workbench:terminal_output', payload: { data: `Process error: ${err.message}\n`, isError: true } });
+                    sendWs(socket, { type: 'workbench:terminal_done', payload: { code: 1 } });
+                });
+            } catch (err) {
+                sendWs(socket, { type: 'workbench:terminal_output', payload: { data: `Error executing command: ${err.message}\n`, isError: true } });
+                sendWs(socket, { type: 'workbench:terminal_done', payload: { code: 1 } });
+            }
+        }
+        else if (data.type === 'workbench:kill_terminal_command') {
+            if (activeProcesses.has(socket)) {
+                try {
+                    activeProcesses.get(socket).kill();
+                    sendWs(socket, { type: 'workbench:terminal_output', payload: { data: `\n[Process Terminated by User]\n` } });
+                } catch (e) {
+                    sendWs(socket, { type: 'workbench:terminal_output', payload: { data: `Error terminating process: ${e.message}\n`, isError: true } });
+                }
+                activeProcesses.delete(socket);
+                sendWs(socket, { type: 'workbench:terminal_done', payload: { code: null } });
+            }
         }
         else if (data.type === 'workbench:save_file' && data.path) {
             try {
@@ -482,6 +536,10 @@ function startDashboard() {
 
         const handleClientDisconnect = () => {
             wsClients.delete(socket);
+            if (activeProcesses.has(socket)) {
+                try { activeProcesses.get(socket).kill(); } catch (e) {}
+                activeProcesses.delete(socket);
+            }
             if (activeAgentSocket === socket) {
                 if (activeAgentContext && activeAgentContext.abortController) {
                     console.log("[WebSocket] Active client disconnected. Aborting active generation...");

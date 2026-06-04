@@ -1,17 +1,19 @@
 {
-  "user_name": "Deep Rajput",
-  "operating_system": "Unknown",
-  "known_facts": [
-    "milkyway galley",
-    "generated image of the galaxy",
-    "Arjuna Pandhar",
-    "Indian professional footballer",
-    "midfielder for ATK Mohun Bagan FC",
-    {
-      "date": "August 15th, 1947",
-      "description": "Independence Day of India"
-    },
-    "Chak De India",
-    "Carbon Compounds"
-  ]
+  "user_name": "Timepass",
+  "operating_system": "Windows",
+  "preferred_programming_languages": [
+    "javascript",
+    "python"
+  ],
+  "preferences": {
+    "theme": "dark"
+  },
+  "known_facts": [],
+  "agent_models": {
+    "ROUTER": "llama3.2:1b",
+    "REACTIVE": "llama3:latest",
+    "COMPLEX": "qwen2.5-coder:7b",
+    "VERIFY": "codellama:latest"
+  },
+  "workspace_dir": "C:\\Users\\AJINKYA\\Desktop\\AriaWorkspace"
 }
