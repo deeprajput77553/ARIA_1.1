@@ -669,7 +669,7 @@ Output ONLY a valid JSON object matching this schema:
 {
   "needDetails": true,
   "reason": "Explain why details are needed",
-  "filename": "suggested_filename.docx",
+  "filename": "descriptive_document_topic.docx",
   "title": "A beautiful formal title for the document",
   "theme": "navy" | "emerald" | "crimson" | "minimalist",
   "topics": [
@@ -679,6 +679,7 @@ Output ONLY a valid JSON object matching this schema:
   "format": "docx" | "markdown"
 }
 Choose the theme based on the subject (e.g., emerald for biotech/nature, navy for business/finance, crimson for modern tech/cutting-edge, minimalist for clean design).
+Make sure the "filename" is a descriptive, clean name ending in .docx (e.g. "hospital_management_system.docx" or "deep_learning_tutorial.docx") based on the document topic. Do not use generic names like "document.docx" or "suggested_filename.docx".
 If the user's request is simple and does NOT need a detailed section-by-section breakdown (e.g. very short, simple question), set "needDetails" to false.`;
 
         const planRaw = await complexModel([
@@ -706,11 +707,43 @@ If the user's request is simple and does NOT need a detailed section-by-section 
         }
 
         const format = plan.format || 'docx';
-        const filename = plan.filename || (format === 'docx' ? 'document.docx' : 'document.md');
-        const safeFilename = path.basename(filename); // Ensure it's just a file name in the workspace
-        const targetPath = resolveSafePath(ctx.workspaceDir, safeFilename);
+        let plannedName = plan.filename || '';
+        const lowerName = plannedName.toLowerCase();
+        if (!plannedName || lowerName === 'document.docx' || lowerName === 'document.md' || lowerName === 'suggested_filename.docx' || lowerName === 'descriptive_document_topic.docx') {
+            const topicSlug = (plan.title || prompt)
+                .toLowerCase()
+                .replace(/[^a-z0-9\s-]/g, '')
+                .trim()
+                .replace(/\s+/g, '_')
+                .slice(0, 40)
+                .replace(/_+$/, '');
+            plannedName = (topicSlug || 'document') + (format === 'docx' ? '.docx' : '.md');
+        }
 
-        Logger.success(`Planned document: ${safeFilename} (${plan.topics.length} sections)`);
+        const safeFilename = path.basename(plannedName); // Ensure it's just a file name in the workspace
+        
+        let relativeDocPath = safeFilename;
+        if (format === 'docx') {
+            const docxDir = path.join(ctx.workspaceDir, 'docx');
+            if (!fs.existsSync(docxDir)) {
+                fs.mkdirSync(docxDir, { recursive: true });
+            }
+            const ext = '.docx';
+            const baseWithoutExt = safeFilename.endsWith(ext) ? safeFilename.slice(0, -ext.length) : safeFilename;
+            
+            let uniqueName = safeFilename;
+            let counter = 1;
+            while (fs.existsSync(path.join(docxDir, uniqueName))) {
+                uniqueName = `${baseWithoutExt}_${counter}${ext}`;
+                counter++;
+            }
+            relativeDocPath = path.join('docx', uniqueName);
+        }
+
+        const targetPath = resolveSafePath(ctx.workspaceDir, relativeDocPath);
+        const finalFilename = path.basename(relativeDocPath);
+
+        Logger.success(`Planned document: ${finalFilename} (${plan.topics.length} sections)`);
 
         // Phase 2: Temporary Database Setup
         const dbPath = path.join(ctx.workspaceDir, 'temp_topics.json');
@@ -718,7 +751,7 @@ If the user's request is simple and does NOT need a detailed section-by-section 
             originalPrompt: prompt,
             documentTitle: plan.title || prompt,
             format: format,
-            filename: safeFilename,
+            filename: relativeDocPath,
             theme: plan.theme || 'navy',
             nvidia_api_key: imageApiKey,
             topics: plan.topics.map(t => ({ title: t, content: '', image_prompt: null, status: 'pending' })),
@@ -1344,6 +1377,7 @@ def compile():
     # Create folders
     os.makedirs('temp', exist_ok=True)
     os.makedirs('images', exist_ok=True)
+    os.makedirs('docx', exist_ok=True)
 
     # 1. Cover Page
     title_p = doc.add_paragraph()
@@ -1538,7 +1572,7 @@ if __name__ == '__main__':
             
             const summaryTable = dbState.topics.map(t => `- **${t.title}** (${t.content.length} chars generated)`).join('\n');
             finalContentSummary = `### Document Generation Complete! 🎉
-- **Filename**: \`${safeFilename}\`
+- **Filename**: \`${path.basename(targetPath)}\`
 - **Output Format**: Microsoft Word (.docx)
 - **Path**: \`${targetPath}\`
 - **Total Sections**: ${total}

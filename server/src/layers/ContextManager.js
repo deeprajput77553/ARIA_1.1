@@ -21,6 +21,7 @@ const getFilePath = (fileName) => {
 // ── File paths ──────────────────────────────────────────────────────────────
 const MEMORY_FILE = getFilePath('memory.json');
 const USER_DATA_FILE = getFilePath('user_data.json');
+const TRACE_FILE = getFilePath('execution_trace.json');
 
 const DEFAULT_PROFILE = {
     user_name: 'Deep Rajput',
@@ -80,6 +81,7 @@ export class ContextManager {
         this._profile = { ...DEFAULT_PROFILE };
         try { fs.writeFileSync(MEMORY_FILE, '[]'); } catch { }
         try { fs.writeFileSync(USER_DATA_FILE, JSON.stringify(DEFAULT_PROFILE, null, 2)); } catch { }
+        try { fs.writeFileSync(TRACE_FILE, '[]', 'utf-8'); } catch { }
     }
 
     setHistory(history) {

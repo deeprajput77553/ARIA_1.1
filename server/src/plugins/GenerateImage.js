@@ -234,9 +234,16 @@ export default {
                 .replace(/[^a-z0-9\s-]/g, '') // remove special characters
                 .trim()
                 .replace(/\s+/g, '_') // replace spaces/hyphens with underscores
-                .slice(0, 30) // limit length
+                .slice(0, 40) // limit length
                 .replace(/_+$/, ''); // remove trailing underscores
-            const filename = `gen_${slug || 'image'}_${Date.now()}.png`;
+            
+            const baseName = slug || 'generated_image';
+            let filename = `${baseName}.png`;
+            let counter = 1;
+            while (fs.existsSync(path.join(imagesDir, filename))) {
+                filename = `${baseName}_${counter}.png`;
+                counter++;
+            }
             const filepath = path.join(imagesDir, filename);
             fs.writeFileSync(filepath, Buffer.from(b64, 'base64'));
 
