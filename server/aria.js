@@ -419,7 +419,7 @@ function startDashboard() {
         return;
     }
     const DASH_DIR = path.dirname(DASH_PATH);
-    const server = http.createServer((req, res) => {
+    const server = http.createServer(async (req, res) => {
         // Enable CORS for local development requests
         res.setHeader('Access-Control-Allow-Origin', '*');
         res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -476,6 +476,32 @@ function startDashboard() {
             } catch (err) {
                 res.writeHead(500);
                 res.end(`Internal Server Error: ${err.message}`);
+            }
+        } else if (urlPath === '/proxy') {
+            try {
+                const searchParams = new URL(req.url, `http://${req.headers.host}`).searchParams;
+                const targetUrl = searchParams.get('url');
+                if (!targetUrl) {
+                    res.writeHead(400);
+                    res.end('Missing url parameter');
+                    return;
+                }
+                const proxyRes = await fetch(targetUrl, {
+                    headers: {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+                        'Referer': ''
+                    }
+                });
+                const contentType = proxyRes.headers.get('content-type') || 'application/octet-stream';
+                res.writeHead(200, {
+                    'Content-Type': contentType,
+                    'Access-Control-Allow-Origin': '*'
+                });
+                const arrayBuffer = await proxyRes.arrayBuffer();
+                res.end(Buffer.from(arrayBuffer));
+            } catch (err) {
+                res.writeHead(500);
+                res.end(`Proxy error: ${err.message}`);
             }
         } else {
             const filePath = path.join(DASH_DIR, urlPath);

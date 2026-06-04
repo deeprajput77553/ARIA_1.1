@@ -15,11 +15,53 @@ async function fetchWithTimeout(url, options = {}, timeout = 5000) {
     }
 }
 
+// Scrape Bing Images (with safeSearch=off)
+async function searchBingImages(query, page = 1) {
+    const headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Cookie': 'SRCHHPGUSR=ADLT=OFF'
+    };
+    const offset = (page - 1) * 30;
+    const first = offset + 1;
+    const url = `https://www.bing.com/images/search?q=${encodeURIComponent(query)}&safeSearch=off&first=${first}`;
+    try {
+        console.log(`[Plugin: WebSearch] Scraping Bing Images: "${query}" (Page ${page}, first=${first})`);
+        const res = await fetchWithTimeout(url, { headers }, 8000);
+        const html = await res.text();
+        const results = [];
+        const regex = /m="({[^"]+})"/g;
+        let match;
+        while ((match = regex.exec(html)) !== null && results.length < 8) {
+            try {
+                const jsonStr = match[1].replace(/&quot;/g, '"');
+                const m = JSON.parse(jsonStr);
+                if (m && m.murl) {
+                    results.push({
+                        title: m.t || query,
+                        image: m.murl,
+                        thumbnail: m.turl || m.murl,
+                        url: m.purl || m.murl
+                    });
+                }
+            } catch (e) {}
+        }
+        return results;
+    } catch (e) {
+        console.error(`[Plugin: WebSearch] Bing Image scrape failed:`, e.message);
+        return [];
+    }
+}
+
 // Scrape DuckDuckGo
-async function searchDuckDuckGo(query, page = 1) {
+async function searchDuckDuckGo(query, page = 1, safe = false) {
     const headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36'
     };
+    if (!safe) {
+        headers['Cookie'] = 'p=-2';
+    }
 
     console.log(`[Plugin: WebSearch] Attempting DuckDuckGo fallback for: "${query}" (Page ${page})`);
 
@@ -82,27 +124,43 @@ async function searchDuckDuckGo(query, page = 1) {
         if (vqdMatch && vqdMatch[1]) {
             const vqd = vqdMatch[1];
 
-            // Get Images (use /i.js endpoint)
-            try {
-                const imgUrl = `https://duckduckgo.com/i.js?q=${encodeURIComponent(query)}&vqd=${vqd}&o=json&s=${imgStart}&kp=-2`;
-                const imgRes = await fetchWithTimeout(imgUrl, { headers: { ...headers, 'Accept': 'application/json' } }, 5000);
-                const imgJson = await imgRes.json();
-                images = (imgJson.results || []).slice(0, 8).map(r => ({
-                    title: r.title || 'Scraped Image',
-                    image: r.image,
-                    thumbnail: r.thumbnail,
-                    url: r.url
-                }));
-            } catch (imgErr) {
-                console.error(`[Plugin: WebSearch] DuckDuckGo Images search failed:`, imgErr.message);
+            // Get Images
+            if (!safe) {
+                try {
+                    images = await searchBingImages(query, page);
+                } catch (e) {
+                    console.warn(`[Plugin: WebSearch] Bing Images search failed, falling back to DDG...`);
+                }
+            }
+            if (images.length === 0) {
+                // Get Images (use /i.js endpoint)
+                try {
+                    const batch = Math.floor(((page - 1) * 8) / 100);
+                    const imgStart = batch * 100;
+                    const sliceStart = ((page - 1) * 8) % 100;
+                    const imgUrl = `https://duckduckgo.com/i.js?q=${encodeURIComponent(query)}&vqd=${vqd}&o=json&s=${imgStart}&kp=-2`;
+                    const imgRes = await fetchWithTimeout(imgUrl, { headers: { ...headers, 'Accept': 'application/json' } }, 5000);
+                    const imgJson = await imgRes.json();
+                    images = (imgJson.results || []).slice(sliceStart, sliceStart + 8).map(r => ({
+                        title: r.title || 'Scraped Image',
+                        image: r.image,
+                        thumbnail: r.thumbnail,
+                        url: r.url
+                    }));
+                } catch (imgErr) {
+                    console.error(`[Plugin: WebSearch] DuckDuckGo Images search failed:`, imgErr.message);
+                }
             }
 
             // Get Videos (use /v.js endpoint)
             try {
-                const videoUrl = `https://duckduckgo.com/v.js?q=${encodeURIComponent(query)}&vqd=${vqd}&o=json&s=${imgStart}&kp=-2`;
+                const batch = Math.floor(((page - 1) * 5) / 100);
+                const videoStart = batch * 100;
+                const sliceStart = ((page - 1) * 5) % 100;
+                const videoUrl = `https://duckduckgo.com/v.js?q=${encodeURIComponent(query)}&vqd=${vqd}&o=json&s=${videoStart}&kp=-2`;
                 const videoRes = await fetchWithTimeout(videoUrl, { headers: { ...headers, 'Accept': 'application/json' } }, 5000);
                 const videoJson = await videoRes.json();
-                videos = (videoJson.results || []).slice(0, 5).map(r => ({
+                videos = (videoJson.results || []).slice(sliceStart, sliceStart + 5).map(r => ({
                     title: r.title || 'Scraped Video',
                     description: r.description || '',
                     url: r.content || r.url,
@@ -133,7 +191,7 @@ async function searchYandex(query, page = 1) {
     const yandexPage = page - 1;
 
     // 1. Web links
-    const webUrl = `https://yandex.com/search/?text=${encodeURIComponent(query)}&family=no&fy=1&family=0&safe=off&p=${yandexPage}`;
+    const webUrl = `https://yandex.com/search/?text=${encodeURIComponent(query)}&family=no&fy=0&family=0&safe=off&p=${yandexPage}`;
     const res = await fetchWithTimeout(webUrl, { headers }, 6000);
     const html = await res.text();
 
@@ -157,7 +215,7 @@ async function searchYandex(query, page = 1) {
     // 2. Images
     let images = [];
     try {
-        const imgUrl = `https://yandex.com/images/search?text=${encodeURIComponent(query)}&family=no&fy=1&family=0&safe=off&p=${yandexPage}`;
+        const imgUrl = `https://yandex.com/images/search?text=${encodeURIComponent(query)}&family=no&fy=0&family=0&safe=off&p=${yandexPage}`;
         const imgRes = await fetchWithTimeout(imgUrl, { headers }, 5000);
         const imgHtml = await imgRes.text();
         const imgRegex = /data-bem='({"serp-item":[\s\S]*?})'/g;
@@ -213,32 +271,46 @@ export default {
     description: 'Searches the network (Yandex/DuckDuckGo fallback) for web links, images, and videos with SafeSearch OFF. Params: { query: string, page?: number }',
     schema: {
         query: { type: 'string', required: true, description: 'The search query or topic to search' },
-        page: { type: 'number', required: false, description: 'Page number (default: 1)' }
+        page: { type: 'number', required: false, description: 'Page number (default: 1)' },
+        safe: { type: 'boolean', required: false, description: 'SafeSearch flag; false disables SafeSearch (default false)' }
     },
     async execute(params) {
         const query = params.query || params.topic;
         const page = parseInt(params.page) || 1;
+        const safe = params.safe === undefined ? false : !!params.safe;
         if (!query) {
             return 'Error: No query provided for search.';
         }
 
-        console.log(`[Plugin: WebSearch] Initiating search for: "${query}" (SafeSearch: OFF, Page: ${page})`);
-        
+        console.log(`[Plugin: WebSearch] Initiating search for: "${query}" (SafeSearch: ${safe ? 'ON' : 'OFF'}, Page: ${page})`);
+
         let results;
-        try {
-            // Attempt Yandex first
-            results = await searchYandex(query, page);
-        } catch (e) {
-            console.log(`[Plugin: WebSearch] Yandex failed: ${e.message}. Falling back to DuckDuckGo.`);
+        if (!safe) {
+            // SafeSearch OFF – force DuckDuckGo only
             try {
-                // Fallback to DuckDuckGo
-                results = await searchDuckDuckGo(query, page);
+                results = await searchDuckDuckGo(query, page, safe);
             } catch (err) {
                 return JSON.stringify({
                     type: "websearch",
                     success: false,
-                    error: `WebSearch failed on both Yandex and DuckDuckGo. Error: ${err.message}`
+                    error: `DuckDuckGo failed: ${err.message}`
                 });
+            }
+        } else {
+            try {
+                // Attempt Yandex first
+                results = await searchYandex(query, page);
+            } catch (e) {
+                console.log(`[Plugin: WebSearch] Yandex failed: ${e.message}. Falling back to DuckDuckGo.`);
+                try {
+                    results = await searchDuckDuckGo(query, page, safe);
+                } catch (err) {
+                    return JSON.stringify({
+                        type: "websearch",
+                        success: false,
+                        error: `Both Yandex and DuckDuckGo failed: ${err.message}`
+                    });
+                }
             }
         }
 

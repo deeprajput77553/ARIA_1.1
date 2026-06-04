@@ -97,6 +97,9 @@ function WorkbenchPage({ pipelineState, connected, workspaceDir, profile, logs, 
                         </button>
                         <img
                             src={(() => {
+                                if (generatedImgPath.startsWith('http://') || generatedImgPath.startsWith('https://') || generatedImgPath.startsWith('data:')) {
+                                    return generatedImgPath;
+                                }
                                 const isDev = window.location.hostname === 'localhost' && window.location.port !== '4200';
                                 const serverUrl = isDev ? 'http://localhost:4200' : '';
                                 return `${serverUrl}/workspace/${encodeURIComponent(generatedImgPath)}`;
