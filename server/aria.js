@@ -161,6 +161,11 @@ async function handleClientMessage(socket, rawText) {
         else if (data.type === 'settings:update_workspace' && data.path) {
             WORKSPACE_DIR = path.resolve(data.path);
             if (!fs.existsSync(WORKSPACE_DIR)) fs.mkdirSync(WORKSPACE_DIR, { recursive: true });
+            
+            const profile = contextManager.getProfile();
+            profile.workspace_dir = WORKSPACE_DIR;
+            contextManager.saveProfile(profile);
+
             contextManager.invalidateSnapshot();
             Logger.success(`[Chat UI] Workspace changed: ${WORKSPACE_DIR}`);
             broadcastWs({ type: 'system:workspace_changed', payload: { workspaceDir: WORKSPACE_DIR } });
@@ -679,10 +684,13 @@ function printStatus() {
 
 // ── Main Interaction Loop ─────────────────────────────────────────────────
 async function startServer() {
-    let detectedWs = process.cwd();
-    // If run from within the server directory, use parent directory as workspace
-    if (detectedWs.endsWith('server') || detectedWs.endsWith('server\\')) {
-        detectedWs = path.join(detectedWs, '..');
+    let profile = contextManager.getProfile();
+    let detectedWs = profile.workspace_dir;
+    if (!detectedWs) {
+        const userHome = process.env.USERPROFILE || process.env.HOME || process.cwd();
+        detectedWs = path.join(userHome, 'Desktop', 'AriaWorkspace');
+        profile.workspace_dir = detectedWs;
+        contextManager.saveProfile(profile);
     }
     WORKSPACE_DIR = path.resolve(detectedWs);
     if (!fs.existsSync(WORKSPACE_DIR)) {

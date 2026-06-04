@@ -6,6 +6,7 @@ import path from 'path';
 import Logger from '../utils/Logger.js';
 import { bus, AGENT_EVENTS } from '../core/EventBus.js';
 import { fileURLToPath } from 'url';
+import { MODELS } from './OutputLayer.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SERVER_DIR = path.join(__dirname, '..', '..');
@@ -28,7 +29,13 @@ const DEFAULT_PROFILE = {
     operating_system: 'Windows',
     preferred_programming_languages: ['javascript', 'python'],
     preferences: { theme: 'dark' },
-    known_facts: []
+    known_facts: [],
+    agent_models: {
+        ROUTER:   'llama3.2:1b',
+        REACTIVE: 'llama3:latest',
+        COMPLEX:  'qwen2.5-coder:7b',
+        VERIFY:   'codellama:latest'
+    }
 };
 
 // ── Workspace scanner config ────────────────────────────────────────────────
@@ -58,9 +65,19 @@ export class ContextManager {
             catch { this._history = []; }
         }
         if (fs.existsSync(USER_DATA_FILE)) {
-            try { this._profile = JSON.parse(fs.readFileSync(USER_DATA_FILE, 'utf-8')); }
-            catch { /* keep defaults */ }
+            try {
+                const loaded = JSON.parse(fs.readFileSync(USER_DATA_FILE, 'utf-8'));
+                this._profile = { ...DEFAULT_PROFILE, ...loaded };
+                if (loaded.preferences) {
+                    this._profile.preferences = { ...DEFAULT_PROFILE.preferences, ...loaded.preferences };
+                }
+                if (loaded.agent_models) {
+                    this._profile.agent_models = { ...DEFAULT_PROFILE.agent_models, ...loaded.agent_models };
+                }
+            }
+            catch { this._profile = { ...DEFAULT_PROFILE }; }
         }
+        this.syncModels();
     }
 
     saveMessage(role, content) {
@@ -71,6 +88,7 @@ export class ContextManager {
 
     saveProfile(profile) {
         this._profile = profile;
+        this.syncModels();
         try { fs.writeFileSync(USER_DATA_FILE, JSON.stringify(profile, null, 2)); } catch { }
         bus.emit(AGENT_EVENTS.PROFILE_UPDATED, { profile });
         Logger.success('[ContextManager] user_data.json updated');
@@ -79,9 +97,17 @@ export class ContextManager {
     clearAll() {
         this._history = [];
         this._profile = { ...DEFAULT_PROFILE };
+        this.syncModels();
         try { fs.writeFileSync(MEMORY_FILE, '[]'); } catch { }
         try { fs.writeFileSync(USER_DATA_FILE, JSON.stringify(DEFAULT_PROFILE, null, 2)); } catch { }
         try { fs.writeFileSync(TRACE_FILE, '[]', 'utf-8'); } catch { }
+    }
+
+    syncModels() {
+        if (this._profile && this._profile.agent_models) {
+            Object.assign(MODELS, this._profile.agent_models);
+            Logger.debug(`[ContextManager] Dynamic models registry updated: ${JSON.stringify(MODELS)}`);
+        }
     }
 
     setHistory(history) {

@@ -4169,6 +4169,95 @@ select.form-input {
     font-size: 0.85rem;
 }
 
+/* 2b. THREE-COLUMN MEMORY LAYOUT (Facts, User Profile, Agent Models) */
+.workbench-memory-layout-custom {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 20px;
+    height: 100%;
+    padding: 24px;
+    box-sizing: border-box;
+    overflow-y: auto;
+}
+
+@media (max-width: 1024px) {
+    .workbench-memory-layout-custom {
+        grid-template-columns: 1fr;
+    }
+}
+
+.memory-section-card {
+    background: rgba(255, 255, 255, 0.01);
+    border: 1px solid rgba(255, 255, 255, 0.04);
+    border-radius: 16px;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    height: 620px;
+    box-sizing: border-box;
+    backdrop-filter: blur(10px);
+}
+
+.memory-section-card .memory-facts-list {
+    flex: 1;
+    overflow-y: auto;
+    margin-top: 16px;
+    padding-right: 4px;
+    gap: 10px;
+}
+
+.memory-add-form-kv {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 12px;
+}
+
+.fact-item-card.kv-card {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+}
+
+.fact-kv-details {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    flex: 1;
+    overflow: hidden;
+}
+
+.fact-kv-key {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.72rem;
+    font-weight: 800;
+    color: var(--purple);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.fact-kv-value {
+    font-size: 0.82rem;
+    color: var(--text-main);
+    word-break: break-all;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.fact-kv-key-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.72rem;
+    font-weight: 800;
+    color: var(--text-muted);
+    margin-right: 4px;
+}
+
+.memory-add-input.uppercase {
+    text-transform: uppercase;
+}
+
 /* 3. PLUGIN TEST TAB LAYOUT */
 .workbench-tools-layout {
     display: grid;
