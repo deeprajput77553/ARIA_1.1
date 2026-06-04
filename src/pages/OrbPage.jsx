@@ -1698,6 +1698,14 @@ function OrbPage({ messages, setMessages, connected, wsRef, profile, orbSentProm
             <div className="orb-halo-blur-bg" />
             <div className="orb-halo-blur-bg-secondary" />
 
+            {/* Concentric visualizer rings that react to systemStatus */}
+            <div className={`orb-visualizer-rings-container status-${systemStatus.toLowerCase()}`}>
+                <div className="visualizer-ring ring-inner" />
+                <div className="visualizer-ring ring-middle" />
+                <div className="visualizer-ring ring-outer" />
+                <div className="visualizer-ring ring-radar" />
+            </div>
+
             {/* 3D WebGL Canvas container */}
             <div ref={canvasContainerRef} className="orb-3d-canvas-viewport" />
 

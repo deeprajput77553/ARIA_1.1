@@ -18,6 +18,7 @@ function App() {
     const [connected, setConnected] = useState(false);
     const [logs, setLogs] = useState([]);
     const [workspaceDir, setWorkspaceDir] = useState('');
+    const [installedModels, setInstalledModels] = useState([]);
     const [profile, setProfile] = useState({
         user_name: 'Deep Rajput',
         operating_system: 'Windows',
@@ -359,6 +360,7 @@ function App() {
                     if (evt.type === 'system:sync') {
                         if (evt.payload.workspaceDir) setWorkspaceDir(evt.payload.workspaceDir);
                         if (evt.payload.profile) setProfile(evt.payload.profile);
+                        if (evt.payload.installedModels) setInstalledModels(evt.payload.installedModels);
                         if (evt.payload.plugins) {
                             window.aria_synced_plugins = evt.payload.plugins;
                             window.dispatchEvent(new CustomEvent('system:sync_data', { detail: evt.payload }));
@@ -428,6 +430,9 @@ function App() {
                         });
                         // Trigger page-level alert or reset pull status if needed
                         window.dispatchEvent(new CustomEvent('settings:pull_done', { detail: evt.payload }));
+                    }
+                    else if (evt.type === 'settings:installed_models') {
+                        if (evt.payload.installedModels) setInstalledModels(evt.payload.installedModels);
                     }
                     else if (evt.type === 'log') {
                         const cleanMsg = evt.message.replace(/\x1b\[[0-9;]*m/g, '');
@@ -598,7 +603,7 @@ function App() {
                         deleteSession={deleteSession}
                     />
                 )}
-                {activePage === 'workbench' && (
+                 {activePage === 'workbench' && (
                     <WorkbenchPage
                         pipelineState={pipelineState}
                         connected={connected}
@@ -606,6 +611,7 @@ function App() {
                         profile={profile}
                         logs={logs}
                         wsRef={wsRef}
+                        installedModels={installedModels}
                     />
                 )}
                 {activePage === 'history' && (
@@ -624,6 +630,7 @@ function App() {
                         workspaceDir={workspaceDir}
                         wsRef={wsRef}
                         connected={connected}
+                        installedModels={installedModels}
                     />
                 )}
             </main>

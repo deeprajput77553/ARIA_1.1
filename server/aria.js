@@ -20,7 +20,7 @@ import { contextManager }  from './src/layers/ContextManager.js';
 import { RouterLayer }     from './src/layers/RouterLayer.js';
 import { ExecutionLayer }  from './src/layers/ExecutionLayer.js';
 import { ReflectionLayer } from './src/layers/ReflectionLayer.js';
-import { OutputLayer }     from './src/layers/OutputLayer.js';
+import { OutputLayer, refreshInstalledModels } from './src/layers/OutputLayer.js';
 import { runTerminal }     from './src/layers/ExecutionLayer.js';
 
 // ── Plugins ───────────────────────────────────────────────────────────────
@@ -197,9 +197,12 @@ async function handleClientMessage(socket, rawText) {
                 ts: new Date().toISOString()
             });
             pluginManager.execute('ollama_pull', { model: data.model })
-                .then(res => {
+                .then(async res => {
                     Logger.success(`[Chat UI] Model pulled: ${data.model}`);
                     broadcastWs({ type: 'settings:pull_model_done', payload: { success: true, result: res, model: data.model } });
+                    // Refresh and broadcast installed models list
+                    const installedModels = await refreshInstalledModels().catch(() => []);
+                    broadcastWs({ type: 'settings:installed_models', payload: { installedModels } });
                 })
                 .catch(err => {
                     Logger.error(`[Chat UI] Failed to pull model: ${err.message}`);
@@ -493,7 +496,7 @@ function startDashboard() {
     });
 
     // Minimal WebSocket upgrade handling (no external dep)
-    server.on('upgrade', (req, socket) => {
+    server.on('upgrade', async (req, socket) => {
         const key    = req.headers['sec-websocket-key'];
         const hash   = crypto.createHash('sha1')
             .update(key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11')
@@ -569,12 +572,14 @@ function startDashboard() {
         wsClients.add(socket);
 
         // Send initial state sync event
+        const installedModels = await refreshInstalledModels().catch(() => []);
         sendWs(socket, {
             type: 'system:sync',
             payload: {
                 workspaceDir: WORKSPACE_DIR,
                 profile: contextManager.getProfile(),
                 history: contextManager.getHistory(),
+                installedModels,
                 plugins: pluginManager.getAll().map(p => ({
                     name: p.name,
                     description: p.description,

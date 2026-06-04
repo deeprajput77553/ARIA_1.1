@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
-import { User, Folder, Download, ShieldAlert, CheckCircle, RefreshCw, Palette, Sparkles, Layers, Type, Volume2 } from 'lucide-react';
+import { User, Folder, Download, ShieldAlert, CheckCircle, RefreshCw, Palette, Sparkles, Layers, Type, Volume2, Cpu, AlertTriangle, Database } from 'lucide-react';
 
-function SettingsPage({ profile, workspaceDir, wsRef, connected }) {
+function SettingsPage({ profile, workspaceDir, wsRef, connected, installedModels = [] }) {
     const [userName, setUserName] = useState(profile?.user_name || 'Deep Rajput');
     const [osName, setOsName] = useState(profile?.operating_system || 'Windows');
     const [workspacePath, setWorkspacePath] = useState(workspaceDir || '');
@@ -11,6 +11,7 @@ function SettingsPage({ profile, workspaceDir, wsRef, connected }) {
     const [profileSaved, setProfileSaved] = useState(false);
     const [workspaceSaved, setWorkspaceSaved] = useState(false);
     const [prefSaved, setPrefSaved] = useState(false);
+    const [mappingsSaved, setMappingsSaved] = useState(false);
  
     const [themeMode, setThemeMode] = useState(profile?.preferences?.theme || 'dark');
     const [glowIntensity, setGlowIntensity] = useState(profile?.preferences?.glow || 'normal');
@@ -20,7 +21,23 @@ function SettingsPage({ profile, workspaceDir, wsRef, connected }) {
     const [soundEffects, setSoundEffects] = useState(profile?.preferences?.soundEffects ?? false);
     const [voiceRate, setVoiceRate] = useState(profile?.preferences?.voiceRate ?? 1.0);
     const [voicePitch, setVoicePitch] = useState(profile?.preferences?.voicePitch ?? 1.0);
+
+    const [routerModel, setRouterModel] = useState(profile?.agent_models?.ROUTER || 'llama3.2:1b');
+    const [reactiveModel, setReactiveModel] = useState(profile?.agent_models?.REACTIVE || 'llama3:latest');
+    const [complexModelName, setComplexModelName] = useState(profile?.agent_models?.COMPLEX || 'qwen2.5-coder:7b');
+    const [verifyModelName, setVerifyModelName] = useState(profile?.agent_models?.VERIFY || 'codellama:latest');
  
+    useEffect(() => {
+        if (profile?.agent_models) {
+            setTimeout(() => {
+                setRouterModel(profile.agent_models.ROUTER || 'llama3.2:1b');
+                setReactiveModel(profile.agent_models.REACTIVE || 'llama3:latest');
+                setComplexModelName(profile.agent_models.COMPLEX || 'qwen2.5-coder:7b');
+                setVerifyModelName(profile.agent_models.VERIFY || 'codellama:latest');
+            }, 0);
+        }
+    }, [profile]);
+
     useEffect(() => {
         if (profile) {
             setTimeout(() => {
@@ -59,6 +76,38 @@ function SettingsPage({ profile, workspaceDir, wsRef, connected }) {
             }, 0);
         }
     }, [profile]);
+
+    const handlePullRecommendedModel = (modelName) => {
+        if (!connected) return;
+        setPulling(true);
+        setPullStatus(`Pulling recommended model: ${modelName}...`);
+        wsRef.current.send(JSON.stringify({
+            type: 'settings:pull_model',
+            model: modelName
+        }));
+    };
+
+    const isInstalled = (modelName) => {
+        if (!modelName) return false;
+        return installedModels.some(m => {
+            const mName = typeof m === 'string' ? m : m.name;
+            return mName === modelName || mName.split(':')[0] === modelName.split(':')[0];
+        });
+    };
+
+    const getOptionsForRole = (currentValue) => {
+        const names = installedModels.map(m => typeof m === 'string' ? m : m.name);
+        if (currentValue && !names.includes(currentValue)) {
+            return [currentValue, ...names];
+        }
+        return names.length > 0 ? names : [currentValue];
+    };
+
+    const formatSize = (bytes) => {
+        if (!bytes) return 'N/A';
+        const gb = bytes / (1024 * 1024 * 1024);
+        return `${gb.toFixed(2)} GB`;
+    };
  
     const handleSavePreferences = (e) => {
         e.preventDefault();
@@ -136,10 +185,51 @@ function SettingsPage({ profile, workspaceDir, wsRef, connected }) {
         setModelToPull('');
     };
 
-    // We can handle incoming model pull notifications if the parent app forwards them.
-    // For now we will support listening to a custom event or log update.
+    const handleSaveModelMappings = (e) => {
+        e.preventDefault();
+        if (!connected) return;
+
+        const updatedProfile = {
+            ...profile,
+            agent_models: {
+                ROUTER: routerModel,
+                REACTIVE: reactiveModel,
+                COMPLEX: complexModelName,
+                VERIFY: verifyModelName
+            }
+        };
+
+        wsRef.current.send(JSON.stringify({
+            type: 'settings:update_profile',
+            profile: updatedProfile
+        }));
+
+        setMappingsSaved(true);
+        setTimeout(() => setMappingsSaved(false), 3000);
+    };
+
+    useEffect(() => {
+        const handlePullDone = (e) => {
+            setPulling(false);
+            setPullStatus(e.detail.success ? 'Model successfully installed!' : `Failed to pull model: ${e.detail.error}`);
+            setTimeout(() => setPullStatus(null), 5000);
+        };
+        window.addEventListener('settings:pull_done', handlePullDone);
+        return () => window.removeEventListener('settings:pull_done', handlePullDone);
+    }, []);
+
     return (
         <div className="settings-page-container">
+            {pulling && (
+                <div className="glass-pulling-overlay">
+                    <div className="overlay-content">
+                        <RefreshCw className="spin text-purple" size={40} />
+                        <h4>Downloading Ollama Model</h4>
+                        <p>{pullStatus}</p>
+                    </div>
+                </div>
+            )}
+            
             <header className="page-section-header">
                 <h2 className="page-title">Configuration & Settings</h2>
                 <p className="page-subtitle">Configure user preferences, change folders, and manage models.</p>
@@ -204,16 +294,187 @@ function SettingsPage({ profile, workspaceDir, wsRef, connected }) {
                     </form>
                 </div>
 
-                <div className="settings-card-item col-span-2">
-                    <h3 className="settings-card-title"><Download size={16} /> Ollama Model Registry Manager</h3>
+                {/* Model Hub Control Center */}
+                <div className="settings-card-item col-span-2 model-hub-card">
+                    <h3 className="settings-card-title"><Cpu size={16} /> Model Hub Control Center</h3>
+                    
+                    <form onSubmit={handleSaveModelMappings} className="settings-form">
+                        <p className="settings-section-desc">Assign specific local models to each agent role. If a configured model is missing, the system dynamically routes execution to an active fallback model.</p>
+                        
+                        <div className="model-roles-list">
+                            {/* Router Role */}
+                            <div className="model-role-row">
+                                <div className="role-info">
+                                    <span className="role-name">Router Role</span>
+                                    <span className="role-desc">Classifies inputs and decides agent execution paths.</span>
+                                </div>
+                                <div className="role-controls">
+                                    <select 
+                                        className="form-input role-select" 
+                                        value={routerModel} 
+                                        onChange={(e) => setRouterModel(e.target.value)}
+                                    >
+                                        {getOptionsForRole(routerModel).map(name => (
+                                            <option key={name} value={name}>{name}</option>
+                                        ))}
+                                    </select>
+                                    
+                                    <div className="role-status-badge">
+                                        {isInstalled(routerModel) ? (
+                                            <span className="badge-status installed"><CheckCircle size={12} /> Installed</span>
+                                        ) : (
+                                            <span className="badge-status fallback"><AlertTriangle size={12} /> Fallback Active</span>
+                                        )}
+                                    </div>
+                                    
+                                    {!isInstalled('llama3.2:1b') && (
+                                        <button 
+                                            type="button" 
+                                            className="pull-recommended-btn"
+                                            disabled={pulling}
+                                            onClick={() => handlePullRecommendedModel('llama3.2:1b')}
+                                        >
+                                            <Download size={10} /> Pull 1.3B Rec
+                                        </button>
+                                    )}
+                                </div>
+                            </div>
+
+                            {/* Reactive Role */}
+                            <div className="model-role-row">
+                                <div className="role-info">
+                                    <span className="role-name">Reactive Role</span>
+                                    <span className="role-desc">Handles simple queries, general chats, and quick answers.</span>
+                                </div>
+                                <div className="role-controls">
+                                    <select 
+                                        className="form-input role-select" 
+                                        value={reactiveModel} 
+                                        onChange={(e) => setReactiveModel(e.target.value)}
+                                    >
+                                        {getOptionsForRole(reactiveModel).map(name => (
+                                            <option key={name} value={name}>{name}</option>
+                                        ))}
+                                    </select>
+                                    
+                                    <div className="role-status-badge">
+                                        {isInstalled(reactiveModel) ? (
+                                            <span className="badge-status installed"><CheckCircle size={12} /> Installed</span>
+                                        ) : (
+                                            <span className="badge-status fallback"><AlertTriangle size={12} /> Fallback Active</span>
+                                        )}
+                                    </div>
+                                    
+                                    {!isInstalled('llama3:latest') && (
+                                        <button 
+                                            type="button" 
+                                            className="pull-recommended-btn"
+                                            disabled={pulling}
+                                            onClick={() => handlePullRecommendedModel('llama3:latest')}
+                                        >
+                                            <Download size={10} /> Pull 8B Rec
+                                        </button>
+                                    )}
+                                </div>
+                            </div>
+
+                            {/* Complex Planner Role */}
+                            <div className="model-role-row">
+                                <div className="role-info">
+                                    <span className="role-name">Complex Planner Role</span>
+                                    <span className="role-desc">Orchestrates multi-step code generation and reasoning.</span>
+                                </div>
+                                <div className="role-controls">
+                                    <select 
+                                        className="form-input role-select" 
+                                        value={complexModelName} 
+                                        onChange={(e) => setComplexModelName(e.target.value)}
+                                    >
+                                        {getOptionsForRole(complexModelName).map(name => (
+                                            <option key={name} value={name}>{name}</option>
+                                        ))}
+                                    </select>
+                                    
+                                    <div className="role-status-badge">
+                                        {isInstalled(complexModelName) ? (
+                                            <span className="badge-status installed"><CheckCircle size={12} /> Installed</span>
+                                        ) : (
+                                            <span className="badge-status fallback"><AlertTriangle size={12} /> Fallback Active</span>
+                                        )}
+                                    </div>
+                                    
+                                    {!isInstalled('qwen2.5-coder:7b') && (
+                                        <button 
+                                            type="button" 
+                                            className="pull-recommended-btn"
+                                            disabled={pulling}
+                                            onClick={() => handlePullRecommendedModel('qwen2.5-coder:7b')}
+                                        >
+                                            <Download size={10} /> Pull 7B Rec
+                                        </button>
+                                    )}
+                                </div>
+                            </div>
+
+                            {/* Code Auditor Role */}
+                            <div className="model-role-row">
+                                <div className="role-info">
+                                    <span className="role-name">Code Auditor Role</span>
+                                    <span className="role-desc">Performs code verification, lint audits, and logic checks.</span>
+                                </div>
+                                <div className="role-controls">
+                                    <select 
+                                        className="form-input role-select" 
+                                        value={verifyModelName} 
+                                        onChange={(e) => setVerifyModelName(e.target.value)}
+                                    >
+                                        {getOptionsForRole(verifyModelName).map(name => (
+                                            <option key={name} value={name}>{name}</option>
+                                        ))}
+                                    </select>
+                                    
+                                    <div className="role-status-badge">
+                                        {isInstalled(verifyModelName) ? (
+                                            <span className="badge-status installed"><CheckCircle size={12} /> Installed</span>
+                                        ) : (
+                                            <span className="badge-status fallback"><AlertTriangle size={12} /> Fallback Active</span>
+                                        )}
+                                    </div>
+                                    
+                                    {!isInstalled('codellama:latest') && (
+                                        <button 
+                                            type="button" 
+                                            className="pull-recommended-btn"
+                                            disabled={pulling}
+                                            onClick={() => handlePullRecommendedModel('codellama:latest')}
+                                        >
+                                            <Download size={10} /> Pull 7B Rec
+                                        </button>
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="settings-actions-row">
+                            <button type="submit" className="save-settings-btn" disabled={!connected}>
+                                Save Role Mappings
+                            </button>
+                            {mappingsSaved && (
+                                <span className="success-badge"><CheckCircle size={14} /> Agent model mappings updated successfully!</span>
+                            )}
+                        </div>
+                    </form>
+
+                    <div className="divider-line" />
+
+                    <h4 className="model-hub-subtitle"><Download size={14} /> Pull Custom Model from Registry</h4>
                     <form onSubmit={handlePullModel} className="settings-form horizontal-form">
                         <div className="form-group flex-grow">
-                            <label className="form-label">Pull Model Name</label>
                             <div className="input-with-button">
                                 <input 
                                     type="text" 
                                     className="form-input" 
-                                    placeholder="e.g. llama3.2:1b, qwen2.5-coder:7b" 
+                                    placeholder="e.g. mistral:latest, llama3.2:3b" 
                                     value={modelToPull} 
                                     onChange={(e) => setModelToPull(e.target.value)} 
                                     disabled={pulling}
@@ -222,14 +483,48 @@ function SettingsPage({ profile, workspaceDir, wsRef, connected }) {
                                     {pulling ? <RefreshCw className="spin" size={14} /> : <Download size={14} />} Pull Model
                                 </button>
                             </div>
-                            <span className="form-help">Pulls the specified model directly from the Ollama library on your local server.</span>
+                            <span className="form-help">Pulls any model directly from the Ollama repository to your local server.</span>
                         </div>
                     </form>
+                </div>
 
-                    {pulling && (
-                        <div className="pull-progress-status">
-                            <RefreshCw size={14} className="spin text-blue" />
-                            <span>{pullStatus}</span>
+                {/* Local Installed Models Library */}
+                <div className="settings-card-item col-span-2 library-card">
+                    <h3 className="settings-card-title"><Database size={16} /> Local Installed Models Library</h3>
+                    <p className="settings-section-desc">View and manage all models currently hosted on your local Ollama server.</p>
+                    
+                    {installedModels.length === 0 ? (
+                        <div className="empty-library-warning">
+                            <AlertTriangle size={24} className="text-yellow" />
+                            <div className="warning-text-container">
+                                <span className="warning-title">No Local Models Detected</span>
+                                <span className="warning-desc">Ensure Ollama is running (`ollama serve`) and that you have pulled at least one model.</span>
+                            </div>
+                        </div>
+                    ) : (
+                        <div className="model-library-grid">
+                            {installedModels.map((model) => (
+                                <div key={model.name} className="model-library-card">
+                                    <div className="model-card-header">
+                                        <span className="model-card-name" title={model.name}>{model.name}</span>
+                                        <span className="model-card-badge">{model.parameterSize}</span>
+                                    </div>
+                                    <div className="model-card-details">
+                                        <div className="detail-row">
+                                            <span className="detail-label">File Size:</span>
+                                            <span className="detail-value">{formatSize(model.size)}</span>
+                                        </div>
+                                        <div className="detail-row">
+                                            <span className="detail-label">Format:</span>
+                                            <span className="detail-value text-blue">{model.format}</span>
+                                        </div>
+                                        <div className="detail-row">
+                                            <span className="detail-label">Quantization:</span>
+                                            <span className="detail-value text-purple">{model.quantizationLevel}</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            ))}
                         </div>
                     )}
                 </div>

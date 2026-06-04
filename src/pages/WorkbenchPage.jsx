@@ -5,7 +5,7 @@ import PluginWorkbenchTab from '../components/PluginWorkbenchTab';
 import TelemetryTab from '../components/TelemetryTab';
 import LiveLogsTab from '../components/LiveLogsTab';
 
-function WorkbenchPage({ pipelineState, connected, workspaceDir, profile, logs, wsRef }) {
+function WorkbenchPage({ pipelineState, connected, workspaceDir, profile, logs, wsRef, installedModels }) {
     const [activeTab, setActiveTab] = useState('memory');
     const [generatedImgPath, setGeneratedImgPath] = useState(null);
     const [showZoomImage, setShowZoomImage] = useState(false);
@@ -76,6 +76,8 @@ function WorkbenchPage({ pipelineState, connected, workspaceDir, profile, logs, 
                         pipelineState={pipelineState} 
                         connected={connected} 
                         workspaceDir={workspaceDir} 
+                        installedModels={installedModels}
+                        profile={profile}
                     />
                 )}
 

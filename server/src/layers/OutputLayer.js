@@ -14,6 +14,73 @@ export const MODELS = {
     VERIFY:   'codellama:latest',  // code review
 };
 
+export async function getInstalledModels() {
+    try {
+        const tagsUrl = OLLAMA_URL.replace('/chat', '/tags');
+        const res = await fetch(tagsUrl, { method: 'GET' });
+        if (!res.ok) return [];
+        const data = await res.json();
+        return (data.models || []).map(m => ({
+            name: m.name,
+            size: m.size,
+            format: m.details?.format || 'gguf',
+            parameterSize: m.details?.parameter_size || 'N/A',
+            quantizationLevel: m.details?.quantization_level || 'N/A'
+        }));
+    } catch {
+        return [];
+    }
+}
+
+let cachedInstalledModels = null;
+let lastCheckTime = 0;
+
+export async function refreshInstalledModels() {
+    const now = Date.now();
+    if (cachedInstalledModels && (now - lastCheckTime < 15000)) {
+        return cachedInstalledModels;
+    }
+    const list = await getInstalledModels();
+    cachedInstalledModels = list;
+    lastCheckTime = now;
+    return list;
+}
+
+export async function resolveModelFallback(requestedModel) {
+    try {
+        const installedList = await refreshInstalledModels();
+        if (!installedList || installedList.length === 0) {
+            return requestedModel;
+        }
+        
+        const installed = installedList.map(m => typeof m === 'string' ? m : m.name);
+        
+        // Exact match
+        if (installed.includes(requestedModel)) {
+            return requestedModel;
+        }
+        
+        // Match without tag
+        const cleanName = requestedModel.split(':')[0];
+        const matchWithoutTag = installed.find(m => m.split(':')[0] === cleanName);
+        if (matchWithoutTag) return matchWithoutTag;
+
+        // Try standard category matches
+        if (requestedModel.includes('coder') || requestedModel.includes('qwen')) {
+            const fallback = installed.find(m => m.includes('coder') || m.includes('qwen') || m.includes('llama3'));
+            if (fallback) return fallback;
+        } else if (requestedModel.includes('1b') || requestedModel.includes('router') || requestedModel.includes('3.2')) {
+            const fallback = installed.find(m => m.includes('1b') || m.includes('3b') || m.includes('8b') || m.includes('llama3.2') || m.includes('llama3'));
+            if (fallback) return fallback;
+        }
+
+        // Return first installed model as ultimate fallback
+        return installed[0];
+    } catch {
+        return requestedModel;
+    }
+}
+
 // ── JSON Extractor ──────────────────────────────────────────────────────────
 export function extractJson(text) {
     if (!text) return null;
@@ -42,7 +109,11 @@ export function extractJson(text) {
 
 // ── Non-streaming call (JSON mode) ─────────────────────────────────────────
 export async function callOllama(messages, model = MODELS.REACTIVE, jsonFormat = false, signal = null) {
-    const payload    = { model, messages, stream: false };
+    const resolvedModel = await resolveModelFallback(model);
+    if (resolvedModel !== model) {
+        Logger.warn(`[Model Fallback] Requested model "${model}" not found. Using "${resolvedModel}".`);
+    }
+    const payload    = { model: resolvedModel, messages, stream: false };
     if (jsonFormat) payload.format = 'json';
     const controller = new AbortController();
     const timer      = setTimeout(() => controller.abort(), 120_000);
@@ -75,7 +146,11 @@ export async function callOllama(messages, model = MODELS.REACTIVE, jsonFormat =
 
 // ── Streaming call — emits tokens in real-time ──────────────────────────────
 export async function callOllamaStream(messages, model = MODELS.REACTIVE, onToken = null, signal = null) {
-    const payload = { model, messages, stream: true };
+    const resolvedModel = await resolveModelFallback(model);
+    if (resolvedModel !== model) {
+        Logger.warn(`[Model Fallback] Requested model "${model}" not found. Using "${resolvedModel}".`);
+    }
+    const payload = { model: resolvedModel, messages, stream: true };
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 180_000);
     if (signal) {
