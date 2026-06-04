@@ -34,6 +34,8 @@ export class AgentContext {
     constructor(rawInput = '', opts = {}) {
         this.id            = randomUUID();
         this.timestamp     = new Date().toISOString();
+        this.abortController = new AbortController();
+        this.signal        = this.abortController.signal;
 
         // ── Input Stage ───────────────────────────────────────────────────
         this.rawInput          = rawInput;

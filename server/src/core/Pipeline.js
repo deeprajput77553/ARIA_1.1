@@ -25,6 +25,10 @@ export class Pipeline {
      */
     async run(ctx) {
         for (const stage of this._stages) {
+            if (ctx.signal?.aborted) {
+                Logger.warn(`Pipeline execution aborted before stage "${stage.name || stage.constructor?.name || 'Stage'}"`);
+                break;
+            }
             const stageName = stage.name || stage.constructor?.name || 'Stage';
             const t0 = Date.now();
 

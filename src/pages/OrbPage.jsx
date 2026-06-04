@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { Mic, MicOff, Volume2, VolumeX, Sparkles, AlertCircle, Play, Square, RefreshCw, X } from 'lucide-react';
+import { Mic, MicOff, Volume2, VolumeX, Sparkles, AlertCircle, Play, Square, RefreshCw, X, MessageSquare, Database, ChevronDown, User, Copy, Check, Download, Printer, ZoomIn, ZoomOut, FileText } from 'lucide-react';
 
 // --- GLSL Shaders ---
 
@@ -370,16 +370,419 @@ const atmosphereFragmentShader = `
     }
 `;
 
-function OrbPage({ messages, setMessages, connected, wsRef }) {
+function OrbPage({ messages, setMessages, connected, wsRef, profile, orbSentPrompt, setOrbSentPrompt }) {
     const canvasContainerRef = useRef(null);
-    const [orbState, setOrbState] = useState(0); // 0: Idle, 1: Listen, 2: Speak
+    const [orbState, setOrbState] = useState(1); // 0: Idle, 1: Listen, 2: Speak
     const [isListening, setIsListening] = useState(false);
     const [isSpeaking, setIsSpeaking] = useState(false);
     const [autoMode, setAutoMode] = useState(true);
+    const [manuallyPaused, setManuallyPaused] = useState(false);
     const [recognitionText, setRecognitionText] = useState('');
-    const [systemStatus, setSystemStatus] = useState('AWAITING INPUT...');
+    const [systemStatus, setSystemStatus] = useState('LISTENING');
     const [errorMessage, setErrorMessage] = useState('');
-    
+
+    const [previewFile, setPreviewFile] = useState(null);
+    const [loadingPreview, setLoadingPreview] = useState(false);
+    const [zoom, setZoom] = useState(100);
+    const [paperTheme, setPaperTheme] = useState('light');
+    const [expandedPipelines, setExpandedPipelines] = useState({});
+    const [copiedId, setCopiedId] = useState(null);
+    const [viewMode, setViewMode] = useState(() => localStorage.getItem('aria_orb_view_mode') || 'minimal');
+    const previewContainerRef = useRef(null);
+
+    // Refs to track states in real-time inside Web Speech event callbacks (prevent stale closures)
+    const isSpeakingRef = useRef(isSpeaking);
+    const autoModeRef = useRef(autoMode);
+    const orbStateRef = useRef(orbState);
+    const systemStatusRef = useRef(systemStatus);
+    const manuallyPausedRef = useRef(manuallyPaused);
+
+    useEffect(() => { isSpeakingRef.current = isSpeaking; }, [isSpeaking]);
+    useEffect(() => { autoModeRef.current = autoMode; }, [autoMode]);
+    useEffect(() => { orbStateRef.current = orbState; }, [orbState]);
+    useEffect(() => { systemStatusRef.current = systemStatus; }, [systemStatus]);
+    useEffect(() => { manuallyPausedRef.current = manuallyPaused; }, [manuallyPaused]);
+
+
+    useEffect(() => {
+        if (!previewFile || !previewContainerRef.current) return;
+        
+        let active = true;
+        setLoadingPreview(true);
+        
+        // Clear previous content
+        previewContainerRef.current.innerHTML = '';
+        
+        const loadDocx = async () => {
+            try {
+                const response = await fetch(previewFile.url);
+                if (!response.ok) throw new Error("Failed to fetch document");
+                const arrayBuffer = await response.arrayBuffer();
+                
+                if (!active) return;
+                
+                // Import docx-preview dynamically
+                const docx = await import('docx-preview');
+                
+                if (!active) return;
+                
+                await docx.renderAsync(arrayBuffer, previewContainerRef.current, null, {
+                    className: "docx-preview-container",
+                    inWrapper: false,
+                    ignoreWidth: true,
+                    ignoreHeight: true,
+                });
+            } catch (err) {
+                console.error("Failed to render docx:", err);
+                if (active && previewContainerRef.current) {
+                    previewContainerRef.current.innerHTML = `<div class="preview-error">Failed to load and render document: ${err.message}</div>`;
+                }
+            } finally {
+                if (active) setLoadingPreview(false);
+            }
+        };
+        
+        loadDocx();
+        
+        return () => {
+            active = false;
+        };
+    }, [previewFile]);
+
+    const renderMessageContent = (msg) => {
+        if (!msg.text) {
+            if (msg.id === 'ai-pending') {
+                return (
+                    <span className="thinking-dots">
+                        <span>.</span><span>.</span><span>.</span>
+                    </span>
+                );
+            }
+            return '';
+        }
+
+        const isDev = window.location.hostname === 'localhost' && window.location.port !== '4200';
+        const apiBase = isDev ? 'http://localhost:4200' : window.location.origin;
+
+        const imgRegex = /images\/[a-zA-Z0-9_\-]+\.png/g;
+        const imagesFound = [...new Set([...msg.text.matchAll(imgRegex)].map(m => m[0]))];
+
+        const docxRegex = /\b[a-zA-Z0-9_\-]+\.docx\b/g;
+        const docxFound = [...new Set([...msg.text.matchAll(docxRegex)].map(m => m[0]))];
+        
+        const mdRegex = /\b[a-zA-Z0-9_\-]+\.md\b/g;
+        const mdFound = [...new Set([...msg.text.matchAll(mdRegex)].map(m => m[0]))].filter(f => f !== 'plan.md' && f !== 'README.md');
+
+        const renderLineInline = (str) => {
+            const regex = /(!\[.*?\]\(.*?\))|(\[.*?\]\(.*?\))|(\*\*.*?\*\*)|(\`.*?\`)/g;
+            const parts = str.split(regex);
+            
+            return parts.map((part, partIdx) => {
+                if (!part) return null;
+                
+                // 1. Scraped Web Image
+                if (part.startsWith('![') && part.endsWith(')')) {
+                    const imgMatch = part.match(/!\[(.*?)\]\((.*?)\)/);
+                    if (imgMatch) {
+                        const alt = imgMatch[1];
+                        const url = imgMatch[2];
+                        return (
+                            <div key={partIdx} className="scraped-image-card-inline">
+                                <div className="scraped-image-wrapper">
+                                    <img 
+                                        src={url} 
+                                        alt={alt} 
+                                        className="scraped-image-element" 
+                                        onError={(e) => {
+                                            e.target.style.display = 'none';
+                                            e.target.nextSibling.style.display = 'flex';
+                                        }} 
+                                    />
+                                    <div className="scraped-image-error" style={{ display: 'none' }}>
+                                        <span>Failed to load image</span>
+                                    </div>
+                                </div>
+                                <div className="scraped-image-title">{alt || 'Scraped Image'}</div>
+                            </div>
+                        );
+                    }
+                }
+                
+                // 2. Clickable Web Link
+                if (part.startsWith('[') && part.endsWith(')')) {
+                    const linkMatch = part.match(/\[(.*?)\]\((.*?)\)/);
+                    if (linkMatch) {
+                        const label = linkMatch[1];
+                        const url = linkMatch[2];
+                        return (
+                            <a 
+                                key={partIdx} 
+                                href={url} 
+                                target="_blank" 
+                                rel="noopener noreferrer" 
+                                className="scraped-link-element"
+                            >
+                                {label}
+                            </a>
+                        );
+                    }
+                }
+                
+                // 3. Bold Text
+                if (part.startsWith('**') && part.endsWith('**')) {
+                    return <strong key={partIdx} className="md-bold">{part.slice(2, -2)}</strong>;
+                }
+                
+                // 4. Inline Code
+                if (part.startsWith('`') && part.endsWith('`')) {
+                    return <code key={partIdx} className="md-inline-code">{part.slice(1, -1)}</code>;
+                }
+                
+                // Plain Text
+                return <span key={partIdx}>{part}</span>;
+            });
+        };
+
+        const parseMarkdownToReact = (text) => {
+            const lines = text.split('\n');
+            return lines.map((line, lineIdx) => {
+                // Headers
+                if (line.startsWith('### ')) {
+                    return <h4 key={lineIdx} className="md-h4">{renderLineInline(line.slice(4))}</h4>;
+                }
+                if (line.startsWith('## ')) {
+                    return <h3 key={lineIdx} className="md-h3">{renderLineInline(line.slice(3))}</h3>;
+                }
+                if (line.startsWith('# ')) {
+                    return <h2 key={lineIdx} className="md-h2">{renderLineInline(line.slice(2))}</h2>;
+                }
+                
+                // Lists
+                if (line.startsWith('- ') || line.startsWith('* ')) {
+                    return (
+                        <div key={lineIdx} className="md-list-item">
+                            <span className="md-bullet">•</span>
+                            <span className="md-list-text">{renderLineInline(line.slice(2))}</span>
+                        </div>
+                    );
+                }
+                
+                const numListMatch = line.match(/^(\d+)\.\s(.*)/);
+                if (numListMatch) {
+                    const num = numListMatch[1];
+                    const content = numListMatch[2];
+                    return (
+                        <div key={lineIdx} className="md-list-item numbered">
+                            <span className="md-number">{num}.</span>
+                            <span className="md-list-text">{renderLineInline(content)}</span>
+                        </div>
+                    );
+                }
+                
+                return <div key={lineIdx} className="chat-text-line">{renderLineInline(line)}</div>;
+            });
+        };
+
+        return (
+            <div className="rendered-message-body">
+                <div className="message-text-paragraphs">{parseMarkdownToReact(msg.text)}</div>
+                
+                {/* Render local NVIDIA FLUX generated images */}
+                {imagesFound.length > 0 && (
+                    <div className="generated-images-gallery">
+                        {imagesFound.map((imgName, idx) => {
+                            const imgSrc = `${apiBase}/workspace/${imgName}`;
+                            return (
+                                <div key={idx} className="generated-image-card">
+                                    <div className="image-card-preview-wrapper">
+                                        <img 
+                                            src={imgSrc} 
+                                            alt="Generated by Aria" 
+                                            className="generated-image-element"
+                                            onError={(e) => {
+                                                e.target.style.display = 'none';
+                                                e.target.nextSibling.style.display = 'flex';
+                                            }}
+                                        />
+                                        <div className="image-error-fallback" style={{ display: 'none' }}>
+                                            <span>Image failed to load</span>
+                                        </div>
+                                    </div>
+                                    <a 
+                                        href={imgSrc} 
+                                        target="_blank" 
+                                        rel="noopener noreferrer" 
+                                        className="image-card-action-btn"
+                                    >
+                                        Open Full Image
+                                    </a>
+                                </div>
+                            );
+                        })}
+                    </div>
+                )}
+
+                {/* Render docx files */}
+                {docxFound.length > 0 && (
+                    <div className="generated-files-list">
+                        {docxFound.map((fileName, idx) => {
+                            const fileUrl = `${apiBase}/workspace/${fileName}`;
+                            return (
+                                <div key={idx} className="generated-file-download-card">
+                                    <div className="file-info-group">
+                                        <div className="file-icon-wrapper docx">
+                                            <Database size={20} />
+                                        </div>
+                                        <div className="file-details">
+                                            <div className="file-name-label">{fileName}</div>
+                                            <div className="file-meta-label">Microsoft Word Document (.docx)</div>
+                                        </div>
+                                    </div>
+                                    <div className="file-actions-group">
+                                        <button 
+                                            onClick={() => setPreviewFile({ name: fileName, url: fileUrl })}
+                                            className="file-preview-action-btn"
+                                        >
+                                            Preview
+                                        </button>
+                                        <a 
+                                            href={fileUrl} 
+                                            download 
+                                            className="file-download-action-btn"
+                                        >
+                                            Download
+                                        </a>
+                                    </div>
+                                </div>
+                            );
+                        })}
+                    </div>
+                )}
+                
+                {/* Render md files */}
+                {mdFound.length > 0 && (
+                    <div className="generated-files-list">
+                        {mdFound.map((fileName, idx) => {
+                            const fileUrl = `${apiBase}/workspace/${fileName}`;
+                            return (
+                                <div key={idx} className="generated-file-download-card">
+                                    <div className="file-info-group">
+                                        <div className="file-icon-wrapper md">
+                                            <MessageSquare size={20} />
+                                        </div>
+                                        <div className="file-details">
+                                            <div className="file-name-label">{fileName}</div>
+                                            <div className="file-meta-label">Markdown Document (.md)</div>
+                                        </div>
+                                    </div>
+                                    <a 
+                                        href={fileUrl} 
+                                        download 
+                                        className="file-download-action-btn"
+                                    >
+                                        Download Markdown
+                                    </a>
+                                </div>
+                            );
+                        })}
+                    </div>
+                )}
+            </div>
+        );
+    };
+
+    const renderMinimalMessageContent = (msg) => {
+        if (!msg) return null;
+        if (!msg.text) {
+            if (msg.id === 'ai-pending') {
+                return (
+                    <span className="thinking-dots">
+                        <span>.</span><span>.</span><span>.</span>
+                    </span>
+                );
+            }
+            return '';
+        }
+        
+        const renderLineInline = (str) => {
+            const regex = /(\*\*.*?\*\*)|(\`.*?\`)/g;
+            const parts = str.split(regex);
+            return parts.map((part, idx) => {
+                if (!part) return null;
+                if (part.startsWith('**') && part.endsWith('**')) {
+                    return <strong key={idx} className="md-bold">{part.slice(2, -2)}</strong>;
+                }
+                if (part.startsWith('`') && part.endsWith('`')) {
+                    return <code key={idx} className="md-inline-code">{part.slice(1, -1)}</code>;
+                }
+                return <span key={idx}>{part}</span>;
+            });
+        };
+
+        const lines = msg.text.split('\n');
+        return (
+            <div className="minimal-text-body">
+                {lines.map((line, idx) => {
+                    if (line.startsWith('### ')) return <h4 key={idx} className="md-h4">{renderLineInline(line.slice(4))}</h4>;
+                    if (line.startsWith('## ')) return <h3 key={idx} className="md-h3">{renderLineInline(line.slice(3))}</h3>;
+                    if (line.startsWith('# ')) return <h2 key={idx} className="md-h2">{renderLineInline(line.slice(2))}</h2>;
+                    if (line.startsWith('- ') || line.startsWith('* ')) {
+                        return (
+                            <div key={idx} className="md-list-item">
+                                <span className="md-bullet">•</span>
+                                <span className="md-list-text">{renderLineInline(line.slice(2))}</span>
+                            </div>
+                        );
+                    }
+                    return <div key={idx} className="chat-text-line">{renderLineInline(line)}</div>;
+                })}
+            </div>
+        );
+    };
+
+    const togglePipeline = (msgId) => {
+        setExpandedPipelines(prev => ({
+            ...prev,
+            [msgId]: !prev[msgId]
+        }));
+    };
+
+    const handleCopyMessage = (msgId, text) => {
+        navigator.clipboard.writeText(text).then(() => {
+            setCopiedId(msgId);
+            setTimeout(() => setCopiedId(null), 2000);
+        });
+    };
+
+    const renderInlinePipeline = (msg) => {
+        if (!msg.logs || msg.logs.length === 0) return null;
+        const isExpanded = expandedPipelines[msg.id];
+
+        return (
+            <div className="inline-pipeline-box">
+                <button className="pipeline-toggle-header" onClick={() => togglePipeline(msg.id)}>
+                    <Sparkles size={14} className="sparkle-gold" style={{ marginRight: '6px' }} />
+                    <span className="pipeline-header-label">Reasoning & Execution Trace</span>
+                    <ChevronDown size={14} style={{ marginLeft: 'auto', transform: isExpanded ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.2s' }} />
+                </button>
+
+                {isExpanded && (
+                    <div className="pipeline-expanded-steps log-trace-mode">
+                        {[...msg.logs].reverse().map((log, index) => (
+                            <div key={log.id || index} className="inline-log-row-stacked">
+                                <div className="log-time">{log.time}</div>
+                                <div className={`log-level-badge-stacked ${log.level.toLowerCase()}`}>
+                                    {log.level.toUpperCase()}
+                                </div>
+                                <div className="log-msg-text">{log.message}</div>
+                            </div>
+                        ))}
+                    </div>
+                )}
+            </div>
+        );
+    };
+
     const sceneRef = useRef(null);
     const rendererRef = useRef(null);
     const clockRef = useRef(null);
@@ -405,6 +808,28 @@ function OrbPage({ messages, setMessages, connected, wsRef }) {
     const recognitionRef = useRef(null);
     const isRecognitionActiveRef = useRef(false);
     const lastSpokenMsgIdRef = useRef(null);
+    const activeUtteranceRef = useRef(null);
+
+    const startListening = () => {
+        if (!recognitionRef.current) return;
+        if (isSpeakingRef.current || isRecognitionActiveRef.current) return;
+        try {
+            isRecognitionActiveRef.current = true;
+            recognitionRef.current.start();
+        } catch (e) {
+            isRecognitionActiveRef.current = false;
+            console.warn('[STT] Failed to start recognition:', e);
+        }
+    };
+
+    const stopListening = () => {
+        if (!recognitionRef.current) return;
+        try {
+            recognitionRef.current.abort();
+        } catch (e) { }
+        isRecognitionActiveRef.current = false;
+        setIsListening(false);
+    };
 
     // --- Speech Recognition Setup ---
     useEffect(() => {
@@ -423,8 +848,10 @@ function OrbPage({ messages, setMessages, connected, wsRef }) {
             console.log('[STT] Speech recognition started');
             isRecognitionActiveRef.current = true;
             setIsListening(true);
+            orbStateRef.current = 1;
             setOrbState(1);
-            setSystemStatus('LISTENING...');
+            systemStatusRef.current = 'LISTENING';
+            setSystemStatus('LISTENING');
             setErrorMessage('');
         };
 
@@ -443,19 +870,36 @@ function OrbPage({ messages, setMessages, connected, wsRef }) {
             const currentText = finalTranscript || interimTranscript;
             setRecognitionText(currentText);
 
+            if (currentText.trim() && systemStatusRef.current !== 'ANALYZING') {
+                systemStatusRef.current = 'ANALYZING';
+                setSystemStatus('ANALYZING');
+            }
+
             if (finalTranscript.trim()) {
                 console.log('[STT] Final Speech Detected:', finalTranscript);
                 sendVoicePrompt(finalTranscript);
-                rec.stop(); // Stop recognition while backend responds and voice speaks
+                rec.abort(); // Stop listening immediately while backend responds and voice speaks
             }
         };
 
         rec.onerror = (event) => {
             console.error('[STT] Speech recognition error:', event.error);
+            let errMsg = '';
             if (event.error === 'not-allowed') {
-                setErrorMessage('Microphone access denied. Please enable mic permissions.');
-                setIsListening(false);
-                if (orbState === 1) setOrbState(0);
+                errMsg = 'Microphone access denied. Please enable mic permissions.';
+                manuallyPausedRef.current = true;
+                setManuallyPaused(true);
+                systemStatusRef.current = 'PAUSED';
+                setSystemStatus('PAUSED');
+                orbStateRef.current = 0;
+                setOrbState(0);
+            } else if (event.error === 'network') {
+                errMsg = 'Speech recognition network error. Please check connection.';
+            } else if (event.error !== 'no-speech' && event.error !== 'aborted') {
+                errMsg = `Speech recognition error: ${event.error}`;
+            }
+            if (errMsg) {
+                setErrorMessage(errMsg);
             }
             isRecognitionActiveRef.current = false;
         };
@@ -464,52 +908,87 @@ function OrbPage({ messages, setMessages, connected, wsRef }) {
             console.log('[STT] Speech recognition ended');
             isRecognitionActiveRef.current = false;
             setIsListening(false);
-            
-            // If we are in autoMode and not speaking or waiting, restart listening
-            if (autoMode && !isSpeaking && orbState !== 2) {
-                // Short timeout to prevent immediate restart loops
+
+            // Go to LISTENING if we are not speaking and not thinking/paused
+            if (
+                systemStatusRef.current !== 'THINKING' &&
+                systemStatusRef.current !== 'SPEAKING' &&
+                !manuallyPausedRef.current
+            ) {
+                orbStateRef.current = 1;
+                setOrbState(1);
+                systemStatusRef.current = 'LISTENING';
+                setSystemStatus('LISTENING');
+            }
+
+            // Auto-restart if in autoMode and not paused/speaking/thinking
+            const shouldRestart = autoModeRef.current &&
+                                  !manuallyPausedRef.current &&
+                                  !isSpeakingRef.current &&
+                                  systemStatusRef.current !== 'THINKING' &&
+                                  systemStatusRef.current !== 'SPEAKING';
+            if (shouldRestart) {
+                console.log('[STT] Auto-restarting speech recognition...');
                 setTimeout(() => {
-                    if (autoMode && !isSpeaking && !isRecognitionActiveRef.current) {
-                        try {
-                            rec.start();
-                        } catch (err) {
-                            console.warn('[STT] Failed to auto-restart recognition:', err);
-                        }
+                    const stillShouldRestart = autoModeRef.current &&
+                                               !manuallyPausedRef.current &&
+                                               !isSpeakingRef.current &&
+                                               systemStatusRef.current !== 'THINKING' &&
+                                               systemStatusRef.current !== 'SPEAKING' &&
+                                               !isRecognitionActiveRef.current;
+                    if (stillShouldRestart) {
+                        startListening();
                     }
-                }, 400);
-            } else if (!isSpeaking && orbState === 1) {
-                setOrbState(0);
-                setSystemStatus('IDLE');
+                }, 300);
             }
         };
 
         recognitionRef.current = rec;
 
-        // Auto-start if permitted
-        if (autoMode) {
-            try {
-                rec.start();
-            } catch (e) {
-                console.log('[STT] Initial auto-start failed (likely waiting for user interaction)');
-            }
-        }
-
         return () => {
             rec.abort();
         };
-    }, [autoMode, isSpeaking]);
+    }, []);
 
-    // Track AI replies to read aloud
+    // Declaratively manage start/stop based on system state
+    useEffect(() => {
+        const shouldBeListening = autoMode && !manuallyPaused && !isSpeaking && systemStatus !== 'THINKING' && systemStatus !== 'SPEAKING';
+        if (shouldBeListening) {
+            startListening();
+        } else {
+            stopListening();
+        }
+    }, [autoMode, manuallyPaused, isSpeaking, systemStatus]);
+
+    // Track AI replies to read aloud (only those triggered by Orb itself)
     useEffect(() => {
         if (messages.length === 0) return;
         const lastMsg = messages[messages.length - 1];
 
-        // Only trigger if last message is from AI, fully finalized (not pending), and not already spoken
-        if (lastMsg.sender === 'ai' && lastMsg.id !== 'welcome' && lastMsg.id !== 'ai-pending' && lastMsg.id !== lastSpokenMsgIdRef.current) {
+        console.log('[TTS Debug] messages changed. lastMsg.id:', lastMsg?.id, 'sender:', lastMsg?.sender, 'hasText:', !!lastMsg?.text, 'orbSentPrompt:', orbSentPrompt);
+
+        // Only trigger TTS if:
+        // - Last message is from AI, fully finalized (not pending)
+        // - Not the welcome message
+        // - Not already spoken
+        // - Has actual text content
+        // - Orb page itself triggered the request (not Chat page)
+        if (
+            lastMsg.sender === 'ai' &&
+            lastMsg.id !== 'welcome' &&
+            lastMsg.id !== 'ai-pending' &&
+            lastMsg.id !== lastSpokenMsgIdRef.current &&
+            lastMsg.text &&
+            !lastMsg.text.includes('[Stopped]') &&
+            !lastMsg.text.includes('[Generation stopped]') &&
+            orbSentPrompt // only speak if Orb sent the request
+        ) {
+            console.log('[TTS Debug] Speaking message:', lastMsg.id);
             lastSpokenMsgIdRef.current = lastMsg.id;
+            setOrbSentPrompt(false); // reset after consuming
             speakText(lastMsg.text);
         }
-    }, [messages]);
+    }, [messages, orbSentPrompt]);
 
     // Pre-load voices for SpeechSynthesis
     useEffect(() => {
@@ -525,9 +1004,24 @@ function OrbPage({ messages, setMessages, connected, wsRef }) {
 
     // Send voice prompts to the WebSocket
     const sendVoicePrompt = (promptText) => {
-        if (!promptText.trim() || !connected) return;
+        if (!promptText.trim()) return;
 
-        setSystemStatus('THINKING...');
+        // Check actual WS state, not stale React prop
+        const wsReady = wsRef.current && wsRef.current.readyState === WebSocket.OPEN;
+        if (!wsReady) {
+            setErrorMessage('Not connected to Aria backend. Please wait...');
+            setTimeout(() => setErrorMessage(''), 3000);
+            // Also restore back to listening so user can try again
+            systemStatusRef.current = 'LISTENING';
+            setSystemStatus('LISTENING');
+            orbStateRef.current = 1;
+            setOrbState(1);
+            return;
+        }
+
+        systemStatusRef.current = 'THINKING';
+        setSystemStatus('THINKING');
+        orbStateRef.current = 0;
         setOrbState(0); // Go back to idle/quiet while thinking
 
         const userMsg = {
@@ -556,26 +1050,19 @@ function OrbPage({ messages, setMessages, connected, wsRef }) {
         // Append to React state so user sees it in their history
         setMessages(prev => [...prev, userMsg, pendingAiMsg]);
 
+        window.playUISound('send');
+        setOrbSentPrompt(true); // mark that Orb sent this
+
         // Transmit via WS to backend
-        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-            wsRef.current.send(JSON.stringify({
-                type: 'chat:message',
-                prompt: promptText
-            }));
-        }
+        wsRef.current.send(JSON.stringify({
+            type: 'chat:message',
+            prompt: promptText
+        }));
     };
 
     // Text to Speech
     const speakText = (text) => {
         if (!text) return;
-        
-        // Stop current speaking
-        window.speechSynthesis.cancel();
-
-        // Stop recognition so it doesn't transcribe the speaker output
-        if (recognitionRef.current) {
-            recognitionRef.current.abort();
-        }
 
         // Clean up markdown tags, URLs, and code blocks before speaking
         let cleanText = text
@@ -590,18 +1077,38 @@ function OrbPage({ messages, setMessages, connected, wsRef }) {
 
         if (!cleanText) return;
 
+        console.log('[TTS Debug] speakText initiated with text length:', cleanText.length);
+
+        // Synchronously update speaking states to prevent race conditions on STT abort
+        isSpeakingRef.current = true;
+        setIsSpeaking(true);
+        orbStateRef.current = 2;
+        setOrbState(2);
+        systemStatusRef.current = 'SPEAKING';
+        setSystemStatus('SPEAKING');
+
+        // Stop current speaking
+        window.speechSynthesis.cancel();
+
+        // Stop recognition so it doesn't transcribe the speaker output
+        stopListening();
+
         const utterance = new SpeechSynthesisUtterance(cleanText);
+        activeUtteranceRef.current = utterance; // Keep a strong reference to prevent garbage collection
         
+        utterance.rate = profile?.preferences?.voiceRate || 1.0;
+        utterance.pitch = profile?.preferences?.voicePitch || 1.0;
+
         // Select female voice
         const voices = window.speechSynthesis.getVoices();
         const femaleNames = [
-            'zira', 'sabina', 'haruka', 'heera', 'elsa', 'susan', 'julie', 'paulina', 
-            'huihui', 'yaoyao', 'hanhan', 'helena', 'katarina', 'tatiana', 'samantha', 
-            'hazel', 'karen', 'moira', 'tessa', 'fiona', 'veena', 'victoria', 'google us english', 
-            'jenny', 'aria', 'michelle', 'linda', 'catherine', 'helen', 'elizabeth', 'jessica', 
+            'zira', 'sabina', 'haruka', 'heera', 'elsa', 'susan', 'julie', 'paulina',
+            'huihui', 'yaoyao', 'hanhan', 'helena', 'katarina', 'tatiana', 'samantha',
+            'hazel', 'karen', 'moira', 'tessa', 'fiona', 'veena', 'victoria', 'google us english',
+            'jenny', 'aria', 'michelle', 'linda', 'catherine', 'helen', 'elizabeth', 'jessica',
             'stephanie', 'sara', 'siri', 'cortana', 'natural', 'female'
         ];
-        
+
         // Find English female voice first
         let femaleVoice = voices.find(v => {
             const name = v.name.toLowerCase();
@@ -609,7 +1116,7 @@ function OrbPage({ messages, setMessages, connected, wsRef }) {
             const isEnglish = lang.startsWith('en');
             return isEnglish && femaleNames.some(fn => name.includes(fn));
         });
-        
+
         // Fallback to any female voice in any language
         if (!femaleVoice) {
             femaleVoice = voices.find(v => {
@@ -622,62 +1129,105 @@ function OrbPage({ messages, setMessages, connected, wsRef }) {
         if (!femaleVoice) {
             femaleVoice = voices.find(v => v.name.toLowerCase().includes('google'));
         }
-        
+
         // Fallback to default
         if (!femaleVoice) {
             femaleVoice = voices[0];
         }
-        
+
         if (femaleVoice) {
             utterance.voice = femaleVoice;
             console.log('[TTS] Using voice:', femaleVoice.name);
         }
 
         utterance.onstart = () => {
+            console.log('[TTS Debug] utterance onstart fired');
+            isSpeakingRef.current = true;
             setIsSpeaking(true);
+            orbStateRef.current = 2;
             setOrbState(2);
-            setSystemStatus('SPEAKING...');
+            systemStatusRef.current = 'SPEAKING';
+            setSystemStatus('SPEAKING');
         };
 
         utterance.onend = () => {
+            console.log('[TTS Debug] utterance onend fired');
+            isSpeakingRef.current = false;
             setIsSpeaking(false);
-            setOrbState(0);
-            setSystemStatus(autoMode ? 'LISTENING...' : 'IDLE');
-            setRecognitionText('');
-
-            // Restart recognition if autoMode is active
-            if (autoMode && recognitionRef.current && !isRecognitionActiveRef.current) {
-                try {
-                    recognitionRef.current.start();
-                } catch (e) {
-                    console.log('[STT] Auto-restart failed:', e);
-                }
+            
+            if (autoModeRef.current && !manuallyPausedRef.current) {
+                orbStateRef.current = 1;
+                setOrbState(1);
+                systemStatusRef.current = 'LISTENING';
+                setSystemStatus('LISTENING');
+            } else {
+                orbStateRef.current = 0;
+                setOrbState(0);
+                systemStatusRef.current = 'PAUSED';
+                setSystemStatus('PAUSED');
             }
+            setRecognitionText('');
+            activeUtteranceRef.current = null;
         };
 
-        utterance.onerror = () => {
+        utterance.onerror = (e) => {
+            console.error('[TTS Debug] utterance onerror fired:', e);
+            isSpeakingRef.current = false;
             setIsSpeaking(false);
-            setOrbState(0);
-            setSystemStatus('IDLE');
+            
+            if (autoModeRef.current && !manuallyPausedRef.current) {
+                orbStateRef.current = 1;
+                setOrbState(1);
+                systemStatusRef.current = 'LISTENING';
+                setSystemStatus('LISTENING');
+            } else {
+                orbStateRef.current = 0;
+                setOrbState(0);
+                systemStatusRef.current = 'PAUSED';
+                setSystemStatus('PAUSED');
+            }
+            activeUtteranceRef.current = null;
         };
 
-        window.speechSynthesis.speak(utterance);
+        // Delay slightly to prevent Chrome cancel race condition
+        setTimeout(() => {
+            console.log('[TTS Debug] Calling window.speechSynthesis.speak');
+            window.speechSynthesis.speak(utterance);
+        }, 50);
     };
 
     const handleStopResponse = () => {
+        window.playUISound('error');
+
         // Cancel Speech Synthesis
         if (typeof window !== 'undefined' && window.speechSynthesis) {
             window.speechSynthesis.cancel();
         }
+        isSpeakingRef.current = false;
         setIsSpeaking(false);
-        setOrbState(0);
-        setSystemStatus('IDLE');
 
         // Stop STT recognition if active
-        if (recognitionRef.current) {
+        stopListening();
+
+        if (autoModeRef.current && !manuallyPausedRef.current) {
+            orbStateRef.current = 1;
+            setOrbState(1);
+            systemStatusRef.current = 'LISTENING';
+            setSystemStatus('LISTENING');
+        } else {
+            orbStateRef.current = 0;
+            setOrbState(0);
+            systemStatusRef.current = 'PAUSED';
+            setSystemStatus('PAUSED');
+        }
+
+        // Send explicit stop command to backend
+        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
             try {
-                recognitionRef.current.abort();
-            } catch (e) {}
+                wsRef.current.send(JSON.stringify({ type: 'chat:stop' }));
+            } catch (err) {
+                console.warn("[WebSocket] Failed to send chat:stop:", err);
+            }
         }
 
         // Finalize pending AI message
@@ -690,62 +1240,95 @@ function OrbPage({ messages, setMessages, connected, wsRef }) {
             updated[pendingIdx] = {
                 ...pendingMsg,
                 id: Date.now() + Math.random(),
-                text: finalizedText
+                text: finalizedText,
+                pipeline: {
+                    input: { status: 'done', detail: 'Stopped', badge: 'IDLE' },
+                    context: { status: '', detail: '-', badge: '-' },
+                    router: { status: '', detail: '-', badge: '-' },
+                    exec: { status: '', detail: '-', badge: '-' },
+                    reflect: { status: '', detail: '-', badge: '-' },
+                    output: { status: '', detail: '-', badge: '-' }
+                }
             };
             return updated;
         });
-
-        // Trigger socket reconnection to abort generation immediately
-        window.dispatchEvent(new CustomEvent('system:reconnect_ws'));
     };
 
     // Manual status buttons handlers
-    const handleIdleClick = () => {
+    // "Listening" mode = mic open, waiting for speech
+    const handleListeningClick = () => {
         window.speechSynthesis.cancel();
+        isSpeakingRef.current = false;
         setIsSpeaking(false);
-        if (recognitionRef.current) {
-            recognitionRef.current.abort();
-        }
+        manuallyPausedRef.current = false;
+        setManuallyPaused(false);
+        orbStateRef.current = 1;
+        setOrbState(1);
+        systemStatusRef.current = 'LISTENING';
+        setSystemStatus('LISTENING');
+        setTimeout(() => {
+            startListening();
+        }, 100);
+    };
+
+    // "Pause" = stop mic, stop speaking, go fully paused
+    const handlePauseClick = () => {
+        window.speechSynthesis.cancel();
+        isSpeakingRef.current = false;
+        setIsSpeaking(false);
+        manuallyPausedRef.current = true;
+        setManuallyPaused(true);
+        stopListening();
+        orbStateRef.current = 0;
         setOrbState(0);
-        setSystemStatus('IDLE');
+        systemStatusRef.current = 'PAUSED';
+        setSystemStatus('PAUSED');
         setRecognitionText('');
     };
 
-    const handleListenClick = () => {
-        window.speechSynthesis.cancel();
-        setIsSpeaking(false);
-        if (recognitionRef.current) {
-            recognitionRef.current.abort();
-            setTimeout(() => {
-                try {
-                    recognitionRef.current.start();
-                } catch(e) {
-                    console.error('[STT] Manual start failed:', e);
-                }
-            }, 300);
-        }
-    };
+    // Keep legacy aliases so nothing else breaks
+    const handleIdleClick = handlePauseClick;
+    const handleListenClick = handleListeningClick;
 
     const handleSpeakClick = () => {
-        if (recognitionRef.current) {
-            recognitionRef.current.abort();
-        }
-        speakText("I am listening and speaking ready. How can I help you today?");
+        manuallyPausedRef.current = true;
+        setManuallyPaused(true);
+        stopListening();
+        speakText("I am listening and ready to help. How can I assist you today?");
     };
 
     const toggleAutoMode = () => {
         const nextMode = !autoMode;
+        autoModeRef.current = nextMode;
         setAutoMode(nextMode);
-        
+        manuallyPausedRef.current = false;
+        setManuallyPaused(false);
         if (nextMode) {
-            if (recognitionRef.current && !isRecognitionActiveRef.current && !isSpeaking) {
-                try { recognitionRef.current.start(); } catch(e) {}
-            }
+            orbStateRef.current = 1;
+            setOrbState(1);
+            systemStatusRef.current = 'LISTENING';
+            setSystemStatus('LISTENING');
         } else {
-            if (recognitionRef.current) {
-                recognitionRef.current.abort();
-            }
+            orbStateRef.current = 0;
+            setOrbState(0);
+            systemStatusRef.current = 'PAUSED';
+            setSystemStatus('PAUSED');
+            stopListening();
         }
+    };
+
+    const toggleViewMode = () => {
+        let nextMode;
+        if (viewMode === 'minimal') {
+            nextMode = 'full';
+        } else if (viewMode === 'full') {
+            nextMode = 'hidden';
+        } else {
+            nextMode = 'minimal';
+        }
+        setViewMode(nextMode);
+        localStorage.setItem('aria_orb_view_mode', nextMode);
+        window.playUISound('click');
     };
 
     // Load voices in browser
@@ -763,21 +1346,22 @@ function OrbPage({ messages, setMessages, connected, wsRef }) {
 
         // Camera
         const camera = new THREE.PerspectiveCamera(75, container.clientWidth / container.clientHeight, 0.1, 1000);
-        camera.position.z = 4.8;
+        camera.position.z = 5.6;
+        camera.position.y = 0.0;
+        camera.lookAt(0, 0, 0);
 
         // Renderer
         const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
         renderer.setSize(container.clientWidth, container.clientHeight);
         renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
         container.appendChild(renderer.domElement);
+        // Anchor canvas to top-left — do NOT set CSS width/height as it conflicts with
+        // Three.js pixel dimensions set by setSize(), which causes the orb to shift off-center.
+        renderer.domElement.style.display = 'block';
+        renderer.domElement.style.position = 'absolute';
+        renderer.domElement.style.top = '0';
+        renderer.domElement.style.left = '0';
         rendererRef.current = renderer;
-
-        // Controls - lock orbit/rotate for visual display
-        const controls = new OrbitControls(camera, renderer.domElement);
-        controls.enableRotate = false;
-        controls.enableZoom = false;
-        controls.enablePan = false;
-        controlsRef.current = controls;
 
         // --- Shader Materials ---
         const uniforms = {
@@ -864,11 +1448,11 @@ function OrbPage({ messages, setMessages, connected, wsRef }) {
             const theta = u * 2.0 * Math.PI;
             const phi = Math.acos(2.0 * v - 1.0);
             const r = 2.2 + Math.random() * 0.7;
-            
+
             particlePositions[i * 3] = r * Math.sin(phi) * Math.cos(theta);
             particlePositions[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
             particlePositions[i * 3 + 2] = r * Math.cos(phi);
-            
+
             particleRandoms[i * 3] = Math.random();
             particleRandoms[i * 3 + 1] = Math.random();
             particleRandoms[i * 3 + 2] = Math.random();
@@ -907,11 +1491,11 @@ function OrbPage({ messages, setMessages, connected, wsRef }) {
             const theta = u * 2.0 * Math.PI;
             const phi = Math.acos(2.0 * v - 1.0);
             const r = 2.45;
-            
+
             atmospherePositions[i * 3] = r * Math.sin(phi) * Math.cos(theta);
             atmospherePositions[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
             atmospherePositions[i * 3 + 2] = r * Math.cos(phi);
-            
+
             atmosphereRandoms[i * 3] = Math.random();
             atmosphereRandoms[i * 3 + 1] = Math.random();
             atmosphereRandoms[i * 3 + 2] = Math.random();
@@ -950,13 +1534,17 @@ function OrbPage({ messages, setMessages, connected, wsRef }) {
         const clock = new THREE.Clock();
         clockRef.current = clock;
 
+        // Animation Y tracking refs
+        let targetY = 0.0;
+        let currentY = 0.0;
+
         // Animation Frame loop
         let animationFrameId;
         const animate = () => {
             animationFrameId = requestAnimationFrame(animate);
 
             const elapsedTime = clock.getElapsedTime();
-            
+
             // Sync uniform times
             uniforms.uTime.value = elapsedTime;
             midMaterial.uniforms.uTime.value = elapsedTime;
@@ -980,7 +1568,7 @@ function OrbPage({ messages, setMessages, connected, wsRef }) {
 
             // Smooth interpolation
             currentAudioDataRef.current += (targetAudioDataRef.current - currentAudioDataRef.current) * 0.1;
-            
+
             // Apply audio amplitude to shaders
             const curAudio = currentAudioDataRef.current;
             uniforms.uAudioData.value = curAudio;
@@ -1014,23 +1602,55 @@ function OrbPage({ messages, setMessages, connected, wsRef }) {
             atmospherePoints.rotation.y -= atmosphereSpeed;
             atmospherePoints.rotation.x += atmosphereSpeed * 0.5;
 
+            // State-driven Y offset:
+            // At start/idle/listening: stays at center (0.0).
+            // When Analyzing/Thinking: moves up (0.6)
+            // When Speaking: comes down slowly back to 0.0.
+            if (systemStatusRef.current === 'ANALYZING' || systemStatusRef.current === 'THINKING') {
+                targetY = 0.6; // moves up
+            } else {
+                targetY = 0.0; // returns to center
+            }
+
+            // Lerp currentY towards targetY.
+            // When moving down, make the interpolation slower (0.015 instead of 0.05).
+            const lerpSpeed = currentY > targetY ? 0.015 : 0.05;
+            currentY += (targetY - currentY) * lerpSpeed;
+
+            // Apply slow bobbing/floating animation
+            const bobbing = Math.sin(elapsedTime * 1.5) * 0.12;
+            const totalY = currentY + bobbing;
+
+            // Apply positions to all meshes & lights
+            sphere.position.y = totalY;
+            midSphere.position.y = totalY;
+            innerSphere.position.y = totalY;
+            shell.position.y = totalY;
+            particles.position.y = totalY;
+            atmospherePoints.position.y = totalY;
+            pointLight.position.y = totalY;
+
             // Wobble scene slightly
             scene.rotation.y = Math.sin(elapsedTime * 0.08) * 0.08;
             scene.rotation.x = Math.cos(elapsedTime * 0.04) * 0.04;
 
-            controls.update();
             renderer.render(scene, camera);
         };
 
         animate();
 
-        // Resize handler
+        // Resize handler — also call immediately to ensure correct size at mount
         const handleResize = () => {
             if (!container || !camera || !renderer) return;
-            camera.aspect = container.clientWidth / container.clientHeight;
+            const w = container.clientWidth;
+            const h = container.clientHeight;
+            if (w === 0 || h === 0) return;
+            camera.aspect = w / h;
             camera.updateProjectionMatrix();
-            renderer.setSize(container.clientWidth, container.clientHeight);
+            renderer.setSize(w, h);
         };
+        // Immediate sync after mount so the orb is centered from frame 1
+        handleResize();
         window.addEventListener('resize', handleResize);
 
         return () => {
@@ -1049,7 +1669,6 @@ function OrbPage({ messages, setMessages, connected, wsRef }) {
             particleMaterial.dispose();
             atmosphereGeometry.dispose();
             atmosphereMaterial.dispose();
-            controls.dispose();
         };
     }, []);
 
@@ -1057,7 +1676,7 @@ function OrbPage({ messages, setMessages, connected, wsRef }) {
     useEffect(() => {
         if (uniformsRef.current) {
             uniformsRef.current.uState.value = orbState;
-            
+
             // Adjust mesh wireframes based on state for visual changes
             if (materialRef.current) {
                 materialRef.current.wireframe = (orbState === 0); // wireframe in idle, solid organic in active
@@ -1065,21 +1684,42 @@ function OrbPage({ messages, setMessages, connected, wsRef }) {
         }
     }, [orbState]);
 
+    const lastMessage = messages.filter(m => m.id !== 'welcome').slice(-1)[0];
+
     return (
         <div className="orb-page-layout">
+            {/* Animated background grid lines and glows */}
+            <div className="orb-page-bg-grid" />
+            <div className="orb-ambient-glow glow-1" />
+            <div className="orb-ambient-glow glow-2" />
+            <div className="orb-ambient-glow glow-3" />
+            <div className="orb-halo-blur-bg" />
+            <div className="orb-halo-blur-bg-secondary" />
+
             {/* 3D WebGL Canvas container */}
             <div ref={canvasContainerRef} className="orb-3d-canvas-viewport" />
-            
+
             {/* Status overlay */}
             <div className="orb-status-display-group">
-                <div className={`orb-status-badge ${orbState === 1 ? 'listen' : orbState === 2 ? 'speak' : ''}`}>
-                    {orbState === 1 ? 'Listening' : orbState === 2 ? 'Speaking' : 'System Ready'}
+                <div className={`orb-status-badge ${
+                    systemStatus === 'SPEAKING' ? 'speak' :
+                    (systemStatus === 'ANALYZING' || systemStatus === 'THINKING') ? 'listen' :
+                    ''
+                }`}>
+                    {systemStatus === 'SPEAKING' ? 'Speaking' :
+                     (systemStatus === 'ANALYZING' || systemStatus === 'THINKING') ? 'Analyzing' :
+                     systemStatus === 'PAUSED' ? 'Paused' : 'Listening'}
                 </div>
-                <div className="orb-status-title-text">{systemStatus}</div>
-                {(orbState !== 0 || isSpeaking || systemStatus === 'THINKING...') && (
+                <div className="orb-status-title-text">
+                    {systemStatus === 'SPEAKING' ? 'SPEAKING...' :
+                     systemStatus === 'ANALYZING' ? 'ANALYZING...' :
+                     systemStatus === 'THINKING' ? 'THINKING...' :
+                     systemStatus === 'PAUSED' ? 'PAUSED' : 'LISTENING...'}
+                </div>
+                {(systemStatus === 'SPEAKING' || systemStatus === 'ANALYZING' || systemStatus === 'THINKING') && (
                     <button className="orb-stop-response-btn" onClick={handleStopResponse}>
                         <svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor" style={{ marginRight: '6px' }}>
-                            <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4 14H8V8h8v8z"/>
+                            <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4 14H8V8h8v8z" />
                         </svg>
                         Stop Response
                     </button>
@@ -1098,57 +1738,104 @@ function OrbPage({ messages, setMessages, connected, wsRef }) {
             </div>
 
             {/* Conversation logger overlay card */}
-            <div className="orb-conversation-log-card">
-                <div className="card-header">
-                    <Sparkles size={14} className="text-cyan" />
-                    <span>Live Transcript</span>
+            {viewMode === 'full' && (
+                <div className="orb-conversation-log-card">
+                    <div className="card-header">
+                        <Sparkles size={14} className="text-cyan" />
+                        <span>Live Transcript</span>
+                    </div>
+                    <div className="card-logs-viewport">
+                        {messages.length <= 1 ? (
+                            <div className="logs-empty-tip">No recent conversation logs. Speak to start the dialog.</div>
+                        ) : (
+                            messages.filter(m => m.id !== 'welcome').map((m, idx) => (
+                                <div key={m.id || idx} className={`log-row ${m.sender}`}>
+                                    <div className="log-row-header" style={{ display: 'flex', alignItems: 'center', marginBottom: '6px', gap: '8px' }}>
+                                        <span className="speaker-name">{m.sender === 'ai' ? 'Aria' : 'You'}</span>
+                                        <span className="message-time" style={{ fontSize: '0.7rem', opacity: 0.5 }}>{m.timestamp}</span>
+                                        {m.id !== 'ai-pending' && (
+                                            <button 
+                                                className="copy-msg-btn-orb"
+                                                onClick={() => handleCopyMessage(m.id, m.text)}
+                                                style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--text-dark)', marginLeft: 'auto', padding: '2px', display: 'flex', alignItems: 'center' }}
+                                                title="Copy text"
+                                            >
+                                                {copiedId === m.id ? <Check size={10} className="text-green" /> : <Copy size={10} />}
+                                            </button>
+                                        )}
+                                    </div>
+                                    <div className="speaker-message">
+                                        {renderMessageContent(m)}
+                                    </div>
+                                    {m.sender === 'ai' && renderInlinePipeline(m)}
+                                </div>
+                            ))
+                        )}
+                    </div>
                 </div>
-                <div className="card-logs-viewport">
-                    {messages.length <= 1 ? (
-                        <div className="logs-empty-tip">No recent conversation logs. Speak to start the dialog.</div>
-                    ) : (
-                        messages.filter(m => m.id !== 'welcome').map((m, idx) => (
-                            <div key={m.id || idx} className={`log-row ${m.sender}`}>
-                                <span className="speaker-name">{m.sender === 'ai' ? 'Aria' : 'You'}:</span>
-                                <span className="speaker-message">{m.text || '...'}</span>
-                            </div>
-                        ))
-                    )}
+            )}
+
+            {/* Minimal captions bubble */}
+            {viewMode === 'minimal' && lastMessage && (
+                <div className={`orb-minimal-captions-container ${lastMessage.sender}`}>
+                    <div className="captions-header">
+                        <span className="captions-speaker-label">
+                            {lastMessage.sender === 'ai' ? 'Aria' : 'You'}
+                        </span>
+                        <span className="captions-time">{lastMessage.timestamp}</span>
+                    </div>
+                    <div className="captions-content">
+                        {renderMinimalMessageContent(lastMessage)}
+                    </div>
                 </div>
-            </div>
+            )}
 
             {/* Controls panel */}
             <div className="orb-controls-floating-panel">
-                <button 
-                    onClick={handleIdleClick}
-                    className={`control-btn ${orbState === 0 ? 'active' : ''}`}
-                    title="Idle State"
-                >
-                    <Square size={14} />
-                    <span>Idle</span>
-                </button>
-                
-                <button 
-                    onClick={handleListenClick}
-                    className={`control-btn ${orbState === 1 ? 'active' : ''}`}
-                    title="Start Listening"
+                {/* Listening = mic open & waiting */}
+                <button
+                    onClick={handleListeningClick}
+                    className={`control-btn ${systemStatus === 'LISTENING' ? 'active' : ''}`}
+                    title="Open mic and listen"
                 >
                     <Mic size={14} />
-                    <span>Listen</span>
+                    <span>Listening</span>
                 </button>
-                
-                <button 
+
+                {/* Analyzing = currently transcribing speech */}
+                <button
+                    className={`control-btn ${(systemStatus === 'ANALYZING' || systemStatus === 'THINKING') ? 'active' : ''}`}
+                    style={{ pointerEvents: 'none', opacity: (systemStatus === 'ANALYZING' || systemStatus === 'THINKING') ? 1 : 0.45 }}
+                    title="Actively analyzing your speech"
+                    tabIndex={-1}
+                >
+                    <Sparkles size={14} />
+                    <span>Analyzing</span>
+                </button>
+
+                {/* Speak = test TTS voice */}
+                <button
                     onClick={handleSpeakClick}
-                    className={`control-btn ${orbState === 2 ? 'active' : ''}`}
+                    className={`control-btn ${systemStatus === 'SPEAKING' ? 'active' : ''}`}
                     title="Test Voice Output"
                 >
                     <Volume2 size={14} />
                     <span>Speak</span>
                 </button>
 
+                {/* Pause = mute mic & stop everything */}
+                <button
+                    onClick={handlePauseClick}
+                    className={`control-btn ${systemStatus === 'PAUSED' ? 'active' : ''}`}
+                    title="Pause — stop mic and speech"
+                >
+                    <MicOff size={14} />
+                    <span>Pause</span>
+                </button>
+
                 <div className="panel-divider" />
 
-                <button 
+                <button
                     onClick={toggleAutoMode}
                     className={`control-btn auto-toggle ${autoMode ? 'active-auto' : ''}`}
                     title="Toggle hands-free auto mode"
@@ -1156,7 +1843,130 @@ function OrbPage({ messages, setMessages, connected, wsRef }) {
                     {autoMode ? <Mic size={14} /> : <MicOff size={14} />}
                     <span>{autoMode ? 'Auto: ON' : 'Auto: OFF'}</span>
                 </button>
+
+                <div className="panel-divider" />
+
+                <button
+                    onClick={toggleViewMode}
+                    className={`control-btn view-toggle-btn ${viewMode !== 'hidden' ? 'active' : ''}`}
+                    title="Toggle chat overlay mode"
+                >
+                    <MessageSquare size={14} />
+                    <span>{viewMode === 'full' ? 'Full Chat' : viewMode === 'minimal' ? 'Captions' : 'Chat: Off'}</span>
+                </button>
             </div>
+
+            {/* Document Preview Modal */}
+            {previewFile && (
+                <div className="docx-preview-modal-overlay" onClick={() => { setPreviewFile(null); setZoom(100); setPaperTheme('light'); }} style={{ zIndex: 100 }}>
+                    <div className="docx-preview-modal-content" onClick={(e) => e.stopPropagation()}>
+                        <div className="docx-preview-modal-header">
+                            <div className="modal-title-group">
+                                <FileText className="modal-docx-icon" size={18} />
+                                <span className="modal-filename">{previewFile.name}</span>
+                            </div>
+                            
+                            {/* Sticky Premium Reading Controls */}
+                            <div className="modal-reading-controls">
+                                <button className="control-btn-preview" onClick={() => setZoom(prev => Math.max(50, prev - 10))} title="Zoom Out">
+                                    <ZoomOut size={14} />
+                                </button>
+                                <span className="zoom-level-text">{zoom}%</span>
+                                <button className="control-btn-preview" onClick={() => setZoom(prev => Math.min(200, prev + 10))} title="Zoom In">
+                                    <ZoomIn size={14} />
+                                </button>
+                                <button className="control-btn-preview" onClick={() => setZoom(100)} title="Reset Zoom">
+                                    100%
+                                </button>
+                                
+                                <div className="control-divider" />
+                                
+                                <button 
+                                    className={`theme-dot light ${paperTheme === 'light' ? 'active' : ''}`} 
+                                    onClick={() => setPaperTheme('light')} 
+                                    title="Light Theme" 
+                                />
+                                <button 
+                                    className={`theme-dot sepia ${paperTheme === 'sepia' ? 'active' : ''}`} 
+                                    onClick={() => setPaperTheme('sepia')} 
+                                    title="Sepia Theme" 
+                                />
+                                <button 
+                                    className={`theme-dot dark ${paperTheme === 'dark' ? 'active' : ''}`} 
+                                    onClick={() => setPaperTheme('dark')} 
+                                    title="Dark Theme" 
+                                />
+                                
+                                <div className="control-divider" />
+                                
+                                <button 
+                                    className="control-btn-preview" 
+                                    onClick={() => {
+                                        const content = previewContainerRef.current?.innerHTML;
+                                        if (!content) return;
+                                        const printWindow = window.open('', '_blank');
+                                        printWindow.document.write(`
+                                            <html>
+                                                <head>
+                                                    <title>${previewFile.name}</title>
+                                                    <style>
+                                                        body {
+                                                            font-family: Calibri, Arial, sans-serif;
+                                                            padding: 40px;
+                                                            color: #2D3748;
+                                                        }
+                                                        table {
+                                                            border-collapse: collapse;
+                                                            width: 100%;
+                                                            margin: 16px 0;
+                                                        }
+                                                        th, td {
+                                                            border: 1px solid #D2D6DC;
+                                                            padding: 8px 12px;
+                                                        }
+                                                        th {
+                                                            background-color: #1A365D;
+                                                            color: white;
+                                                            font-weight: bold;
+                                                        }
+                                                    </style>
+                                                </head>
+                                                <body onload="window.print(); window.close();">
+                                                    ${content}
+                                                </body>
+                                            </html>
+                                        `);
+                                        printWindow.document.close();
+                                    }} 
+                                    title="Print Document"
+                                >
+                                    <Printer size={14} />
+                                </button>
+                            </div>
+
+                            <div className="modal-header-actions">
+                                <a href={previewFile.url} download className="modal-btn" title="Download Document">
+                                    <Download size={16} />
+                                </a>
+                                <button className="modal-btn close-btn" onClick={() => { setPreviewFile(null); setZoom(100); setPaperTheme('light'); }} title="Close Preview">
+                                    <X size={16} />
+                                </button>
+                            </div>
+                        </div>
+                        <div className={`docx-preview-modal-body paper-theme-${paperTheme}`}>
+                            {loadingPreview && (
+                                <div className="modal-loading-overlay">
+                                    <RefreshCw className="modal-loading-spinner spin" size={24} />
+                                    <span className="modal-loading-text">Loading document preview...</span>
+                                </div>
+                            )}
+                            <div className="docx-viewer-output-wrapper" style={{ width: `${800 * (zoom / 100)}px`, maxWidth: '100%' }}>
+                                <div ref={previewContainerRef}></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }

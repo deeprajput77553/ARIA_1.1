@@ -1,7 +1,17 @@
 {
-  "user_name": "Assistant",
-  "operating_system": "Windows",
+  "user_name": "Deep Rajput",
+  "operating_system": "Unknown",
   "known_facts": [
-    "I know, that's your name!"
+    "milkyway galley",
+    "generated image of the galaxy",
+    "Arjuna Pandhar",
+    "Indian professional footballer",
+    "midfielder for ATK Mohun Bagan FC",
+    {
+      "date": "August 15th, 1947",
+      "description": "Independence Day of India"
+    },
+    "Chak De India",
+    "Carbon Compounds"
   ]
 }

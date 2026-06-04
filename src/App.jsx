@@ -2,14 +2,19 @@ import { useEffect, useState, useRef } from 'react';
 import Navbar from './components/Navbar';
 import OrbPage from './pages/OrbPage';
 import ChatPage from './pages/ChatPage';
-import DashboardPage from './pages/DashboardPage';
+import WorkbenchPage from './pages/WorkbenchPage';
 import HistoryPage from './pages/HistoryPage';
 import SettingsPage from './pages/SettingsPage';
 import LogTerminal from './components/LogTerminal';
 import './index.css';
 
+if (typeof window !== 'undefined') {
+    window.playUISound = () => {};
+}
+
 function App() {
     const [activePage, setActivePage] = useState('orb');
+    const [orbSentPrompt, setOrbSentPrompt] = useState(false);
     const [connected, setConnected] = useState(false);
     const [logs, setLogs] = useState([]);
     const [workspaceDir, setWorkspaceDir] = useState('');
@@ -36,7 +41,7 @@ function App() {
             try {
                 const parsed = JSON.parse(saved);
                 if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-            } catch (e) {}
+            } catch (e) { }
         }
         return [
             {
@@ -150,7 +155,7 @@ function App() {
             const nextActiveId = remaining[0].id;
             setActiveSessionId(nextActiveId);
             localStorage.setItem('aria_active_session_id', nextActiveId);
-            
+
             const session = remaining[0];
             if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
                 wsRef.current.send(JSON.stringify({
@@ -215,6 +220,84 @@ function App() {
     };
 
     useEffect(() => {
+        const theme = profile?.preferences?.theme || 'dark';
+        document.documentElement.setAttribute('data-theme', theme);
+
+        const glow = profile?.preferences?.glow || 'normal';
+        document.documentElement.setAttribute('data-glow', glow);
+
+        const density = profile?.preferences?.density || 'normal';
+        document.documentElement.setAttribute('data-density', density);
+
+        const accent = profile?.preferences?.accent || 'cyan';
+        document.documentElement.setAttribute('data-accent', accent);
+
+        const font = profile?.preferences?.font || 'Plus Jakarta Sans';
+        document.documentElement.style.setProperty('--font-family-interface', font === 'JetBrains Mono' ? "'JetBrains Mono', monospace" : `'${font}', sans-serif`);
+
+        // Synth Sound Effects Generator
+        const soundEnabled = profile?.preferences?.soundEffects ?? false;
+        window.playUISound = (type) => {
+            if (!soundEnabled) return;
+            try {
+                const AudioContext = window.AudioContext || window.webkitAudioContext;
+                if (!AudioContext) return;
+                const ctx = new AudioContext();
+                const osc = ctx.createOscillator();
+                const gain = ctx.createGain();
+                osc.connect(gain);
+                gain.connect(ctx.destination);
+                const now = ctx.currentTime;
+                
+                if (type === 'click') {
+                    osc.type = 'sine';
+                    osc.frequency.setValueAtTime(1200, now);
+                    osc.frequency.exponentialRampToValueAtTime(800, now + 0.05);
+                    gain.gain.setValueAtTime(0.04, now);
+                    gain.gain.linearRampToValueAtTime(0.001, now + 0.05);
+                    osc.start(now);
+                    osc.stop(now + 0.05);
+                } else if (type === 'success') {
+                    osc.type = 'triangle';
+                    osc.frequency.setValueAtTime(600, now);
+                    osc.frequency.setValueAtTime(800, now + 0.08);
+                    osc.frequency.exponentialRampToValueAtTime(1200, now + 0.2);
+                    gain.gain.setValueAtTime(0.06, now);
+                    gain.gain.linearRampToValueAtTime(0.001, now + 0.25);
+                    osc.start(now);
+                    osc.stop(now + 0.25);
+                } else if (type === 'error') {
+                    osc.type = 'sawtooth';
+                    osc.frequency.setValueAtTime(180, now);
+                    osc.frequency.linearRampToValueAtTime(100, now + 0.15);
+                    gain.gain.setValueAtTime(0.05, now);
+                    gain.gain.linearRampToValueAtTime(0.001, now + 0.15);
+                    osc.start(now);
+                    osc.stop(now + 0.15);
+                } else if (type === 'send') {
+                    osc.type = 'sine';
+                    osc.frequency.setValueAtTime(200, now);
+                    osc.frequency.exponentialRampToValueAtTime(1600, now + 0.12);
+                    gain.gain.setValueAtTime(0.05, now);
+                    gain.gain.linearRampToValueAtTime(0.001, now + 0.12);
+                    osc.start(now);
+                    osc.stop(now + 0.12);
+                } else if (type === 'chime') {
+                    osc.type = 'sine';
+                    osc.frequency.setValueAtTime(440, now);
+                    osc.frequency.exponentialRampToValueAtTime(880, now + 0.3);
+                    gain.gain.setValueAtTime(0.04, now);
+                    gain.gain.linearRampToValueAtTime(0.001, now + 0.4);
+                    osc.start(now);
+                    osc.stop(now + 0.4);
+                }
+            } catch (e) {
+                console.warn("Web Audio API issue:", e);
+            }
+        };
+    }, [profile]);
+
+    useEffect(() => {
         let reconnectTimeout;
         const connect = () => {
             if (wsRef.current && (wsRef.current.readyState === WebSocket.CONNECTING || wsRef.current.readyState === WebSocket.OPEN)) {
@@ -257,7 +340,7 @@ function App() {
                                     }))
                             }));
                         }
-                    } catch (e) {}
+                    } catch (e) { }
                 }
             };
 
@@ -276,6 +359,10 @@ function App() {
                     if (evt.type === 'system:sync') {
                         if (evt.payload.workspaceDir) setWorkspaceDir(evt.payload.workspaceDir);
                         if (evt.payload.profile) setProfile(evt.payload.profile);
+                        if (evt.payload.plugins) {
+                            window.aria_synced_plugins = evt.payload.plugins;
+                            window.dispatchEvent(new CustomEvent('system:sync_data', { detail: evt.payload }));
+                        }
                         if (evt.payload.history) {
                             const saved = localStorage.getItem('aria_chat_sessions');
                             if (!saved) {
@@ -335,8 +422,8 @@ function App() {
                             type: 'log',
                             time,
                             level: evt.payload.success ? 'success' : 'error',
-                            message: evt.payload.success 
-                                ? `Successfully pulled model: ${evt.payload.model}` 
+                            message: evt.payload.success
+                                ? `Successfully pulled model: ${evt.payload.model}`
                                 : `Failed to pull model: ${evt.payload.error}`
                         });
                         // Trigger page-level alert or reset pull status if needed
@@ -416,6 +503,24 @@ function App() {
                             logs: [...activeMessageLogsRef.current]
                         } : m));
                     }
+                    else if (evt.type === 'workbench:files_list') {
+                        window.dispatchEvent(new CustomEvent('workbench:files_list', { detail: evt.payload.files }));
+                    }
+                    else if (evt.type === 'workbench:save_done') {
+                        window.dispatchEvent(new CustomEvent('workbench:save_done', { detail: evt.payload }));
+                    }
+                    else if (evt.type === 'workbench:create_done') {
+                        window.dispatchEvent(new CustomEvent('workbench:create_done', { detail: evt.payload }));
+                    }
+                    else if (evt.type === 'workbench:delete_done') {
+                        window.dispatchEvent(new CustomEvent('workbench:delete_done', { detail: evt.payload }));
+                    }
+                    else if (evt.type === 'workbench:execute_done') {
+                        window.dispatchEvent(new CustomEvent('workbench:execute_done', { detail: evt.payload }));
+                    }
+                    else if (evt.type === 'system:profile_updated') {
+                        if (evt.payload.profile) setProfile(evt.payload.profile);
+                    }
                 } catch (err) {
                     console.error("Error parsing WebSocket message:", err);
                 }
@@ -455,28 +560,31 @@ function App() {
 
     return (
         <div className="app-workspace-layout">
-            <Navbar 
-                activePage={activePage} 
-                setActivePage={setActivePage} 
-                connected={connected} 
-                workspaceDir={workspaceDir} 
+            <Navbar
+                activePage={activePage}
+                setActivePage={setActivePage}
+                connected={connected}
+                workspaceDir={workspaceDir}
             />
-            
+
             <main className="main-content-viewport">
                 {activePage === 'orb' && (
-                    <OrbPage 
-                        messages={messages} 
-                        setMessages={setMessages} 
-                        connected={connected} 
-                        wsRef={wsRef} 
+                    <OrbPage
+                        messages={messages}
+                        setMessages={setMessages}
+                        connected={connected}
+                        wsRef={wsRef}
+                        profile={profile}
+                        orbSentPrompt={orbSentPrompt}
+                        setOrbSentPrompt={setOrbSentPrompt}
                     />
                 )}
                 {activePage === 'chat' && (
-                    <ChatPage 
-                        messages={messages} 
-                        setMessages={setMessages} 
-                        connected={connected} 
-                        wsRef={wsRef} 
+                    <ChatPage
+                        messages={messages}
+                        setMessages={setMessages}
+                        connected={connected}
+                        wsRef={wsRef}
                         sessions={sessions}
                         activeSessionId={activeSessionId}
                         createNewSession={createNewSession}
@@ -484,35 +592,36 @@ function App() {
                         deleteSession={deleteSession}
                     />
                 )}
-                {activePage === 'dashboard' && (
-                    <DashboardPage 
-                        pipelineState={pipelineState} 
-                        connected={connected} 
-                        workspaceDir={workspaceDir} 
-                        profile={profile} 
-                        logs={logs} 
+                {activePage === 'workbench' && (
+                    <WorkbenchPage
+                        pipelineState={pipelineState}
+                        connected={connected}
+                        workspaceDir={workspaceDir}
+                        profile={profile}
+                        logs={logs}
+                        wsRef={wsRef}
                     />
                 )}
                 {activePage === 'history' && (
-                    <HistoryPage 
+                    <HistoryPage
                         sessions={sessions}
                         activeSessionId={activeSessionId}
                         changeActiveSession={changeActiveSession}
                         deleteSession={deleteSession}
-                        logs={logs} 
-                        wsRef={wsRef} 
+                        logs={logs}
+                        wsRef={wsRef}
                     />
                 )}
                 {activePage === 'settings' && (
-                    <SettingsPage 
-                        profile={profile} 
-                        workspaceDir={workspaceDir} 
-                        wsRef={wsRef} 
-                        connected={connected} 
+                    <SettingsPage
+                        profile={profile}
+                        workspaceDir={workspaceDir}
+                        wsRef={wsRef}
+                        connected={connected}
                     />
                 )}
             </main>
-            
+
             <LogTerminal logs={logs} setLogs={setLogs} />
         </div>
     );

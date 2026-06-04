@@ -53,6 +53,8 @@ const pipeline = new Pipeline()
 
 // ── Global State ──────────────────────────────────────────────────────────
 let WORKSPACE_DIR = process.cwd();
+let activeAgentContext = null;
+let activeAgentSocket = null;
 
 // ── Live Dashboard (HTTP + WebSocket) ────────────────────────────────────
 const WS_PORT    = 4200;
@@ -68,11 +70,55 @@ if (!fs.existsSync(DASH_PATH)) {
 
 let wsClients    = new Set();
 
+function listWorkspaceFiles(dir, baseDir) {
+    let results = [];
+    try {
+        const list = fs.readdirSync(dir, { withFileTypes: true });
+        for (const entry of list) {
+            const resPath = path.join(dir, entry.name);
+            const relPath = path.relative(baseDir, resPath).replace(/\\/g, '/');
+            if (entry.isDirectory()) {
+                if (['node_modules', '.git', '.gemini', 'dist', 'build', 'public/assets'].includes(entry.name)) continue;
+                results.push({
+                    name: entry.name,
+                    path: relPath,
+                    isDir: true
+                });
+                results = results.concat(listWorkspaceFiles(resPath, baseDir));
+            } else {
+                if (['package-lock.json', '.DS_Store', 'eslint.config.js'].includes(entry.name)) continue;
+                const stats = fs.statSync(resPath);
+                results.push({
+                    name: entry.name,
+                    path: relPath,
+                    isDir: false,
+                    size: stats.size,
+                    mtime: stats.mtime
+                });
+            }
+        }
+    } catch (e) {
+        console.error("[listWorkspaceFiles] error:", e.message);
+    }
+    results.sort((a, b) => {
+        if (a.isDir && !b.isDir) return -1;
+        if (!a.isDir && b.isDir) return 1;
+        return a.name.localeCompare(b.name);
+    });
+    return results;
+}
+
 async function handleClientMessage(socket, rawText) {
     try {
         console.log("[WebSocket] Raw text received from client:", rawText);
         const data = JSON.parse(rawText);
         if (data.type === 'chat:message' && data.prompt) {
+            // Abort active context if it exists
+            if (activeAgentContext && activeAgentContext.abortController) {
+                console.log("[WebSocket] Aborting previous active AgentContext before starting new prompt");
+                activeAgentContext.abortController.abort();
+            }
+
             console.log(`[WebSocket] Processing prompt: "${data.prompt}"`);
             Logger.info(`[Chat UI] Received prompt: "${data.prompt}"`);
 
@@ -81,13 +127,32 @@ async function handleClientMessage(socket, rawText) {
                 history:          contextManager.getHistory(),
                 userProfile:      contextManager.getProfile(),
             });
+            activeAgentContext = ctx;
+            activeAgentSocket = socket;
 
             // Emit input:received event so dashboard UI updates immediately
             bus.emit(AGENT_EVENTS.INPUT_RECEIVED, { input: data.prompt });
 
             // Run pipeline
-            await pipeline.run(ctx);
+            try {
+                await pipeline.run(ctx);
+            } finally {
+                if (activeAgentContext === ctx) {
+                    activeAgentContext = null;
+                }
+                if (activeAgentSocket === socket) {
+                    activeAgentSocket = null;
+                }
+            }
             console.log(`[WebSocket] Pipeline execution complete for prompt: "${data.prompt}"`);
+        }
+        else if (data.type === 'chat:stop') {
+            if (activeAgentContext && activeAgentContext.abortController) {
+                console.log("[WebSocket] Explicit Stop Request received. Aborting active generation...");
+                activeAgentContext.abortController.abort();
+                activeAgentContext = null;
+            }
+            activeAgentSocket = null;
         }
         else if (data.type === 'chat:sync_history' && Array.isArray(data.history)) {
             contextManager.setHistory(data.history);
@@ -99,15 +164,23 @@ async function handleClientMessage(socket, rawText) {
             contextManager.invalidateSnapshot();
             Logger.success(`[Chat UI] Workspace changed: ${WORKSPACE_DIR}`);
             broadcastWs({ type: 'system:workspace_changed', payload: { workspaceDir: WORKSPACE_DIR } });
+            
+            // Broadcast files list for new workspace
+            const files = listWorkspaceFiles(WORKSPACE_DIR, WORKSPACE_DIR);
+            broadcastWs({ type: 'workbench:files_list', payload: { files } });
         }
         else if (data.type === 'settings:update_profile' && data.profile) {
             contextManager.saveProfile(data.profile);
             Logger.success(`[Chat UI] Profile updated`);
+            broadcastWs({ type: 'system:profile_updated', payload: { profile: data.profile } });
         }
         else if (data.type === 'settings:clear_memory') {
             contextManager.clearAll();
             Logger.success(`[Chat UI] Memory and context cleared`);
             broadcastWs({ type: 'system:memory_cleared' });
+            
+            // Broadcast profile update as well to sync frontend
+            broadcastWs({ type: 'system:profile_updated', payload: { profile: contextManager.getProfile() } });
         }
         else if (data.type === 'settings:pull_model' && data.model) {
             Logger.info(`[Chat UI] Pulling model: ${data.model}`);
@@ -125,6 +198,103 @@ async function handleClientMessage(socket, rawText) {
                 .catch(err => {
                     Logger.error(`[Chat UI] Failed to pull model: ${err.message}`);
                     broadcastWs({ type: 'settings:pull_model_done', payload: { success: false, error: err.message, model: data.model } });
+                });
+        }
+        // Workbench WebSocket Commands
+        else if (data.type === 'workbench:list_files') {
+            const files = listWorkspaceFiles(WORKSPACE_DIR, WORKSPACE_DIR);
+            sendWs(socket, { type: 'workbench:files_list', payload: { files } });
+        }
+        else if (data.type === 'workbench:save_file' && data.path) {
+            try {
+                const targetPath = path.resolve(WORKSPACE_DIR, data.path);
+                const safeBase = path.resolve(WORKSPACE_DIR);
+                if (!targetPath.startsWith(safeBase)) {
+                    throw new Error('Access Denied: Cannot write outside workspace directory');
+                }
+                fs.writeFileSync(targetPath, data.content || '', 'utf-8');
+                Logger.success(`[Workbench] Saved file: ${data.path}`);
+                sendWs(socket, { type: 'workbench:save_done', payload: { success: true, path: data.path } });
+                
+                const files = listWorkspaceFiles(WORKSPACE_DIR, WORKSPACE_DIR);
+                broadcastWs({ type: 'workbench:files_list', payload: { files } });
+            } catch (err) {
+                Logger.error(`[Workbench] Save file failed: ${err.message}`);
+                sendWs(socket, { type: 'workbench:save_done', payload: { success: false, error: err.message, path: data.path } });
+            }
+        }
+        else if (data.type === 'workbench:create_file' && data.path) {
+            try {
+                const targetPath = path.resolve(WORKSPACE_DIR, data.path);
+                const safeBase = path.resolve(WORKSPACE_DIR);
+                if (!targetPath.startsWith(safeBase)) {
+                    throw new Error('Access Denied: Cannot create outside workspace directory');
+                }
+                if (data.isDir) {
+                    fs.mkdirSync(targetPath, { recursive: true });
+                } else {
+                    fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+                    fs.writeFileSync(targetPath, '', 'utf-8');
+                }
+                Logger.success(`[Workbench] Created: ${data.path}`);
+                sendWs(socket, { type: 'workbench:create_done', payload: { success: true, path: data.path } });
+                
+                const files = listWorkspaceFiles(WORKSPACE_DIR, WORKSPACE_DIR);
+                broadcastWs({ type: 'workbench:files_list', payload: { files } });
+            } catch (err) {
+                Logger.error(`[Workbench] Create failed: ${err.message}`);
+                sendWs(socket, { type: 'workbench:create_done', payload: { success: false, error: err.message, path: data.path } });
+            }
+        }
+        else if (data.type === 'workbench:delete_file' && data.path) {
+            try {
+                const targetPath = path.resolve(WORKSPACE_DIR, data.path);
+                const safeBase = path.resolve(WORKSPACE_DIR);
+                if (!targetPath.startsWith(safeBase)) {
+                    throw new Error('Access Denied: Cannot delete outside workspace directory');
+                }
+                if (fs.existsSync(targetPath)) {
+                    const stats = fs.statSync(targetPath);
+                    if (stats.isDirectory()) {
+                        fs.rmSync(targetPath, { recursive: true, force: true });
+                    } else {
+                        fs.unlinkSync(targetPath);
+                    }
+                    Logger.success(`[Workbench] Deleted: ${data.path}`);
+                    sendWs(socket, { type: 'workbench:delete_done', payload: { success: true, path: data.path } });
+                    
+                    const files = listWorkspaceFiles(WORKSPACE_DIR, WORKSPACE_DIR);
+                    broadcastWs({ type: 'workbench:files_list', payload: { files } });
+                } else {
+                    throw new Error('File not found');
+                }
+            } catch (err) {
+                Logger.error(`[Workbench] Delete failed: ${err.message}`);
+                sendWs(socket, { type: 'workbench:delete_done', payload: { success: false, error: err.message, path: data.path } });
+            }
+        }
+        else if (data.type === 'workbench:execute_tool' && data.name && data.params) {
+            Logger.info(`[Workbench] Executing plugin "${data.name}" directly`);
+            broadcastWs({
+                type: 'log',
+                level: 'info',
+                message: `[Workbench API] Direct tool execute started: ${data.name}...`,
+                ts: new Date().toISOString()
+            });
+            pluginManager.execute(data.name, data.params, WORKSPACE_DIR)
+                .then(result => {
+                    Logger.success(`[Workbench API] Direct tool execute complete: ${data.name}`);
+                    sendWs(socket, { type: 'workbench:execute_done', payload: { success: true, name: data.name, result } });
+                    
+                    // If image was generated or file created, update files list
+                    if (data.name === 'generate_image' || data.name === 'run_command' || data.name === 'installer') {
+                        const files = listWorkspaceFiles(WORKSPACE_DIR, WORKSPACE_DIR);
+                        broadcastWs({ type: 'workbench:files_list', payload: { files } });
+                    }
+                })
+                .catch(err => {
+                    Logger.error(`[Workbench API] Direct tool execute failed: ${err.message}`);
+                    sendWs(socket, { type: 'workbench:execute_done', payload: { success: false, name: data.name, error: err.message } });
                 });
         }
     } catch (err) {
@@ -305,16 +475,33 @@ function startDashboard() {
             }
         });
 
-        socket.on('error', () => {
+        const handleClientDisconnect = () => {
             wsClients.delete(socket);
+            if (activeAgentSocket === socket) {
+                if (activeAgentContext && activeAgentContext.abortController) {
+                    console.log("[WebSocket] Active client disconnected. Aborting active generation...");
+                    activeAgentContext.abortController.abort();
+                }
+                activeAgentContext = null;
+                activeAgentSocket = null;
+            } else if (wsClients.size === 0 && activeAgentContext && activeAgentContext.abortController) {
+                console.log("[WebSocket] No clients connected. Aborting active generation...");
+                activeAgentContext.abortController.abort();
+                activeAgentContext = null;
+                activeAgentSocket = null;
+            }
+        };
+
+        socket.on('error', () => {
+            handleClientDisconnect();
             socket.destroy();
         });
         socket.on('end', () => {
-            wsClients.delete(socket);
+            handleClientDisconnect();
             socket.end();
         });
         socket.on('close', () => {
-            wsClients.delete(socket);
+            handleClientDisconnect();
         });
         wsClients.add(socket);
 
@@ -324,7 +511,12 @@ function startDashboard() {
             payload: {
                 workspaceDir: WORKSPACE_DIR,
                 profile: contextManager.getProfile(),
-                history: contextManager.getHistory()
+                history: contextManager.getHistory(),
+                plugins: pluginManager.getAll().map(p => ({
+                    name: p.name,
+                    description: p.description,
+                    schema: p.schema || {}
+                }))
             }
         });
 

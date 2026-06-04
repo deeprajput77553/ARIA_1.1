@@ -252,7 +252,7 @@ export class ExecutionLayer {
         Logger.divider('─', 62);
         process.stdout.write(`\x1b[1m\x1b[96m🧠  Aria:\x1b[0m \x1b[93m`);
 
-        const full = await callOllamaStream(msgs, MODELS.REACTIVE);
+        const full = await callOllamaStream(msgs, MODELS.REACTIVE, null, ctx.signal);
         process.stdout.write('\x1b[0m\n');
         Logger.nl();
 
@@ -268,7 +268,7 @@ export class ExecutionLayer {
             prompt: `Task: ${t}\nWorkspace Snapshot:\n${ctx.workspaceSnapshot}`
         }));
         
-        const results = await subagentManager.executeParallel(tasks, MODELS.COMPLEX);
+        const results = await subagentManager.executeParallel(tasks, MODELS.COMPLEX, ctx.signal);
         
         const combined = results.map(r => `--- Result for ${r.id} ---\n${r.error || r.result}`).join('\n\n');
         
@@ -277,7 +277,7 @@ export class ExecutionLayer {
         const finalPrompt = `You are the master agent. Summarize the following parallel subagent results into a coherent final response for the user:\n\n${combined}`;
         
         process.stdout.write(`\n\x1b[1m\x1b[96m🧠  Aria (Aggregating):\x1b[0m \x1b[93m`);
-        const finalOut = await callOllamaStream([{ role: 'user', content: finalPrompt }], MODELS.REACTIVE);
+        const finalOut = await callOllamaStream([{ role: 'user', content: finalPrompt }], MODELS.REACTIVE, null, ctx.signal);
         process.stdout.write('\x1b[0m\n');
         
         return finalOut;
@@ -310,7 +310,7 @@ export class ExecutionLayer {
                 const plan = extractJson(await complexModel([
                     { role: 'system', content: planSys },
                     { role: 'user',   content: ctx.enrichedPrompt }
-                ], true));
+                ], true, ctx.signal));
 
                 if (!plan?.command) { Logger.warn('Could not plan a command.'); break; }
                 command = plan.command;
@@ -331,7 +331,7 @@ export class ExecutionLayer {
             const check = extractJson(await callOllama([
                 { role: 'system', content: `You verify terminal output. Output ONLY JSON: {"ok":true|false,"summary":"one-line summary","fix":"if failed, concise fix suggestion"}\nRules:\n1. Read output exactly. Do not invent version numbers.\n2. ok:true if exit code 0 and output non-empty.` },
                 { role: 'user',   content: `Command: ${command}\nExit code: ${code}\nOutput:\n${rawOutput || '(empty)'}` }
-            ], MODELS.REACTIVE, true));
+            ], MODELS.REACTIVE, true, ctx.signal));
 
             const succeeded = check ? check.ok !== false : (code === 0 && rawOutput.length > 0);
 
@@ -354,7 +354,7 @@ export class ExecutionLayer {
                 const healRaw = await complexModel([
                     { role: 'system', content: healSys },
                     { role: 'user', content: `Command: ${command}\nOutput/Trace:\n${rawOutput}` }
-                ], true);
+                ], true, ctx.signal);
                 
                 const healCall = extractJson(healRaw);
                 if (healCall && healCall.tool) {
@@ -427,7 +427,7 @@ ${contextManager.buildContextHeader('')}`;
         let loops = 30, hasCritiquedPlan = false, verificationAttempts = 0, formattingErrors = 0;
 
         while (loops-- > 0) {
-            const raw = await complexModel(history, true);
+            const raw = await complexModel(history, true, ctx.signal);
             if (!raw) { Logger.error('Model returned empty response.'); break; }
 
             history.push({ role: 'assistant', content: raw });
@@ -551,7 +551,7 @@ ${contextManager.buildContextHeader('')}`;
             return await this._handleReactive(ctx);
         }
 
-        const result = await pluginManager.execute(name, params, ctx.workspaceDir);
+        const result = await pluginManager.execute(name, { ...params, signal: ctx.signal }, ctx.workspaceDir);
         Logger.success(`Plugin [${name}] → ${result.slice(0, 120)}`);
         console.log(`\n\x1b[93m${result}\x1b[0m\n`);
         ctx.recordToolCall(`plugin:${name}`, params, result);
@@ -562,7 +562,7 @@ ${contextManager.buildContextHeader('')}`;
     async _refinePlan(prompt, planContent) {
         Logger.stage('PlanRefinement', 'Analyzing plan.md for gaps...');
         const sys = `You are an elite code plan reviewer.\nReview the plan against the user prompt.\nOutput ONLY JSON: {"approved":true|false,"reason":"why","gaps":["gap 1"]}\nUser prompt: "${prompt}"`;
-        const raw = await routerModel([{ role: 'system', content: sys }, { role: 'user', content: `Plan:\n${planContent}` }], true);
+        const raw = await routerModel([{ role: 'system', content: sys }, { role: 'user', content: `Plan:\n${planContent}` }], true, ctx.signal);
         const cr  = extractJson(raw);
         if (cr?.approved === false && cr.gaps?.length > 0) {
             Logger.warn(`Plan not approved. Gaps: ${cr.gaps.join(', ')}`);
@@ -577,7 +577,7 @@ ${contextManager.buildContextHeader('')}`;
         if (depth >= 3) return { success: false, error: `Self-correction max depth. Error: ${errorOutput}` };
         Logger.stage('SelfCorrection', `Level ${depth + 1} — ${errorOutput.slice(0, 100)}...`);
         const sys = `You are a self-correcting agent supervisor.\nA tool failed. Propose a corrected tool call.\nOutput ONLY a single valid JSON tool call, or {"give_up":true,"reason":"..."}.\nFailed: ${JSON.stringify(toolCall)}\nError: ${errorOutput}`;
-        const correctedRaw  = await complexModel([{ role: 'system', content: sys }, { role: 'user', content: 'Provide the corrected JSON tool call now.' }], true);
+        const correctedRaw  = await complexModel([{ role: 'system', content: sys }, { role: 'user', content: 'Provide the corrected JSON tool call now.' }], true, ctx.signal);
         const correctedCall = extractJson(correctedRaw);
         if (correctedCall?.give_up) return { success: false, error: `Correction abandoned: ${correctedCall.reason}` };
         if (correctedCall) {
@@ -597,10 +597,10 @@ ${contextManager.buildContextHeader('')}`;
             if (!fs.existsSync(full)) continue;
             const content = fs.readFileSync(full, 'utf-8');
             const sys     = `You are a code reviewer. Verify this file satisfies: "${ctx.enrichedPrompt}". Point out bugs, syntax errors, or placeholder implementations. Be concise.`;
-            const review  = await verifyModel([{ role: 'system', content: sys }, { role: 'user', content: `\`\`\`\n${content}\n\`\`\`` }]);
+            const review  = await verifyModel([{ role: 'system', content: sys }, { role: 'user', content: `\`\`\`\n${content}\n\`\`\`` }], ctx.signal);
             if (!review) continue;
             const cleanSys = `Analyze this code review. If it contains critical bugs or failures: {"clean":false,"issues":["issue 1"]}. Otherwise: {"clean":true}.`;
-            const cr = extractJson(await routerModel([{ role: 'system', content: cleanSys }, { role: 'user', content: review }], true));
+            const cr = extractJson(await routerModel([{ role: 'system', content: cleanSys }, { role: 'user', content: review }], true, ctx.signal));
             if (cr?.clean === false) {
                 feedback.push(`File: ${filePath}\nIssues:\n${(cr.issues || []).join('\n')}\nReview:\n${review}`);
             }
@@ -684,7 +684,7 @@ If the user's request is simple and does NOT need a detailed section-by-section 
         const planRaw = await complexModel([
             { role: 'system', content: planSys },
             { role: 'user', content: prompt }
-        ], true);
+        ], true, ctx.signal);
 
         let plan = extractJson(planRaw);
         if (!plan || !Array.isArray(plan.topics)) {
@@ -765,7 +765,7 @@ Instructions:
 
             const sectionRaw = await complexModel([
                 { role: 'user', content: nextPrompt }
-            ], true);
+            ], true, ctx.signal);
 
             let sectionParsed = extractJson(sectionRaw);
             let content = '';
@@ -789,7 +789,7 @@ Instructions:
                     const refinedPrompt = await routerModel([
                         { role: 'system', content: promptRefinerSys },
                         { role: 'user', content: `Section Title: "${topic.title}"\nSection Content:\n"${content.slice(0, 1500)}"\n\nRaw Image Concept: "${imagePrompt}"` }
-                    ], true);
+                    ], true, ctx.signal);
                     if (refinedPrompt && refinedPrompt.trim()) {
                         imagePrompt = refinedPrompt.trim().replace(/^"|"$/g, '');
                         Logger.debug(`[DocumentMode] Refined image prompt: "${imagePrompt}"`);

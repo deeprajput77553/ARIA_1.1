@@ -23,6 +23,11 @@ CRITICAL RULES:
 - The output MUST be a single, continuous, highly detailed paragraph of text.
 - DO NOT use any list formatting, bullet points, headers, bold markers (**), or special characters. Combine all elements into one smooth description.
 - DO NOT use words associated with decay, distress, horror, fear, or trademark/safety flags (such as "haunting", "hauntingly", "eerie", "eerily", "creepy", "spooky", "decaying", "ruined", "collapsed", "mystique"). Use positive, majestic, mysterious, alluring, or futuristic vocabulary instead.
+- If the user's prompt is a webpage, website, user interface, mobile app screen, dashboard, or software screenshot:
+  * The visual style must be a clean, realistic, front-facing 2D digital user interface mockup or a sharp browser viewport screenshot of a live webpage. Do NOT use 3D volumetric renders, painting styles, or fantasy illustrations.
+  * Describe realistic structural UI elements: top navigation bar (with a clean logo, navigation links, and profile picture), sidebar menu, main dashboard/content panel, and organized cards, grids, buttons, or charts.
+  * Explicitly request clean, legible modern sans-serif typography, sharp and readable text headers, UI buttons with text labels, and realistic dummy text.
+  * Use a professional and harmonious color scheme (e.g., sleek dark mode with cool blue accents, or clean white and slate gray theme) and realistic soft drop shadows for cards and panels to make it look like a real production-ready website or application interface.
 - If the user's prompt is a flowchart, diagram, or technical infographic:
   * Absolutely NO text labels, words, or letters (to prevent garbled AI text).
   * Use clear symbolic icons, glowing nodes, glossy spheres, and connecting pipeline rays to illustrate the structure.
@@ -37,7 +42,7 @@ export default {
     schema: {
         prompt: { type: 'string', required: true, description: 'The description of the image/diagram to generate' }
     },
-    async execute({ prompt }, workspaceDir) {
+    async execute({ prompt, signal }, workspaceDir) {
         const ws = workspaceDir || process.cwd();
 
         // Read API key from .env file
@@ -75,7 +80,7 @@ export default {
             const enriched = await callOllama([
                 { role: 'system', content: PROMPT_ENHANCER_SYS },
                 { role: 'user', content: prompt }
-            ], MODELS.REACTIVE, false);
+            ], MODELS.REACTIVE, false, signal);
 
             if (enriched && enriched.trim()) {
                 let cleaned = enriched.trim();
@@ -116,7 +121,8 @@ export default {
                     { pattern: /\bruins\b/gi, replacement: 'structures' },
                     { pattern: /\bruin\b/gi, replacement: 'relic' },
 
-                    { pattern: /\bcollapsed\b/gi, replacement: 'historic' }
+                    { pattern: /\bcollapsed\b/gi, replacement: 'historic' },
+                    { pattern: /\bavatar\b/gi, replacement: 'profile picture' }
                 ];
                 for (const r of replacements) {
                     cleaned = cleaned.replace(r.pattern, r.replacement);
@@ -144,52 +150,77 @@ export default {
         };
 
         let response;
-        try {
-            Logger.stage('GenerateImage', `Requesting image generation using FLUX.1-dev (28 steps, 1024x1024)...`);
-            response = await fetch(url, {
-                method: 'POST',
-                headers: {
-                    "Authorization": `Bearer ${apiKey}`,
-                    "Accept": "application/json",
-                    "Content-Type": "application/json"
-                },
-                body: JSON.stringify(payload)
-            });
+        let b64;
+        let isBlackImage = false;
+        let finalPromptUsed = descriptivePrompt;
 
-            if (!response.ok) {
-                console.log(`[GenerateImage] FLUX.1-dev failed with status ${response.status}. Falling back to FLUX.1-schnell...`);
-                throw new Error(`Status ${response.status}`);
+        for (let attempt = 1; attempt <= 2; attempt++) {
+            try {
+                Logger.stage('GenerateImage', `Requesting image generation using FLUX.1-dev (attempt ${attempt})...`);
+                response = await fetch(url, {
+                    method: 'POST',
+                    headers: {
+                        "Authorization": `Bearer ${apiKey}`,
+                        "Accept": "application/json",
+                        "Content-Type": "application/json"
+                    },
+                    body: JSON.stringify(payload)
+                });
+
+                if (!response.ok) {
+                    console.log(`[GenerateImage] FLUX.1-dev failed with status ${response.status}. Falling back to FLUX.1-schnell...`);
+                    throw new Error(`Status ${response.status}`);
+                }
+            } catch (err) {
+                Logger.stage('GenerateImage', `FLUX.1-dev failed or is unavailable. Falling back to FLUX.1-schnell (4 steps)...`);
+                url = "https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux.1-schnell";
+                payload.steps = 4;
+                response = await fetch(url, {
+                    method: 'POST',
+                    headers: {
+                        "Authorization": `Bearer ${apiKey}`,
+                        "Accept": "application/json",
+                        "Content-Type": "application/json"
+                    },
+                    body: JSON.stringify(payload)
+                });
             }
-        } catch (err) {
-            Logger.stage('GenerateImage', `FLUX.1-dev failed or is unavailable. Falling back to FLUX.1-schnell (4 steps)...`);
-            url = "https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux.1-schnell";
-            payload = {
-                "prompt": descriptivePrompt,
-                "seed": 0,
-                "steps": 4
-            };
-            response = await fetch(url, {
-                method: 'POST',
-                headers: {
-                    "Authorization": `Bearer ${apiKey}`,
-                    "Accept": "application/json",
-                    "Content-Type": "application/json"
-                },
-                body: JSON.stringify(payload)
-            });
+
+            try {
+                if (!response.ok) {
+                    const errText = await response.text();
+                    return `x NVIDIA API returned status ${response.status}: ${errText}`;
+                }
+
+                const data = await response.json();
+                b64 = data.artifacts?.[0]?.base64 || data.data?.[0]?.b64_json;
+                if (!b64) {
+                    return `x No base64 image data found in the response. Response keys: ${Object.keys(data).join(', ')}`;
+                }
+
+                const buf = Buffer.from(b64, 'base64');
+                if (buf.length === 6428) {
+                    isBlackImage = true;
+                    if (attempt === 1) {
+                        Logger.warn(`NVIDIA safety filter triggered (black image returned). Retrying with original prompt...`);
+                        payload.prompt = prompt; // Fallback to original prompt
+                        finalPromptUsed = prompt;
+                        continue;
+                    }
+                } else {
+                    isBlackImage = false;
+                    break;
+                }
+            } catch (err) {
+                return `x Failed to process generated image: ${err.message}`;
+            }
+        }
+
+        if (isBlackImage) {
+            return `x NVIDIA API safety filter blocked the image generation for both enriched and original prompts.`;
         }
 
         try {
-            if (!response.ok) {
-                const errText = await response.text();
-                return `x NVIDIA API returned status ${response.status}: ${errText}`;
-            }
-
-            const data = await response.json();
-            const b64 = data.artifacts?.[0]?.base64 || data.data?.[0]?.b64_json;
-            if (!b64) {
-                return `x No base64 image data found in the response. Response keys: ${Object.keys(data).join(', ')}`;
-            }
 
             // Ensure images folder exists in workspace
             const imagesDir = path.join(ws, 'images');
@@ -210,7 +241,7 @@ export default {
             fs.writeFileSync(filepath, Buffer.from(b64, 'base64'));
 
             const usedModel = url.includes('flux.1-dev') ? 'FLUX.1-dev (28 steps, 1024x1024)' : 'FLUX.1-schnell (4 steps)';
-            return `* Image successfully generated!\n- **Model Used**: ${usedModel}\n- **Saved to**: \`images/${filename}\`\n- **Original Prompt**: "${prompt}"\n- **Enriched Prompt used**: "${descriptivePrompt}"`;
+            return `* Image successfully generated!\n- **Model Used**: ${usedModel}\n- **Saved to**: \`images/${filename}\`\n- **Original Prompt**: "${prompt}"\n- **Enriched Prompt used**: "${finalPromptUsed}"`;
         } catch (err) {
             return `x Failed to process generated image: ${err.message}`;
         }

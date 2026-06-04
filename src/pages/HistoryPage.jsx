@@ -1,12 +1,11 @@
 import { useState, useEffect, useRef } from 'react';
 import * as THREE from 'three';
-import { ArrowLeft, MessageSquare, Database, FileText, Clock, Terminal, Play, ChevronDown } from 'lucide-react';
+import { ArrowLeft, MessageSquare, Database, FileText, Clock, Terminal, ChevronDown } from 'lucide-react';
 
 function HistoryPage({
     sessions = [],
     activeSessionId,
     changeActiveSession,
-    deleteSession,
     logs = []
 }) {
     const [selectedSessionId, setSelectedSessionId] = useState(activeSessionId || (sessions[0]?.id));
@@ -59,9 +58,9 @@ function HistoryPage({
     const getSessionAssets = (session) => {
         if (!session) return [];
         const assets = [];
-        const imgRegex = /images\/[a-zA-Z0-9_\-]+\.png/g;
-        const docxRegex = /\b[a-zA-Z0-9_\-]+\.docx\b/g;
-        const mdRegex = /\b[a-zA-Z0-9_\-]+\.md\b/g;
+        const imgRegex = /images\/[a-zA-Z0-9_-]+\.png/g;
+        const docxRegex = /\b[a-zA-Z0-9_-]+\.docx\b/g;
+        const mdRegex = /\b[a-zA-Z0-9_-]+\.md\b/g;
 
         session.messages.forEach(msg => {
             if (!msg.text) return;
@@ -183,7 +182,7 @@ function HistoryPage({
                 }
             }, 150);
         }
-    }, [isRNA]);
+    }, [isRNA]); // eslint-disable-line react-hooks/exhaustive-deps
 
     // Handle session selection
     const handleSelectSession = (id) => {
@@ -200,13 +199,7 @@ function HistoryPage({
         setIsRNA(true);
     };
 
-    // Open chat
-    const handleOpenChat = () => {
-        if (selectedSessionId) {
-            changeActiveSession(selectedSessionId);
-            setIsRNA(true);
-        }
-    };
+    // Open chat helper deleted (unused)
 
     // Close chat
     const handleCloseChat = () => {
@@ -254,33 +247,72 @@ function HistoryPage({
         }
 
         function drawBackground(time) {
-            bgCtx.fillStyle = '#020308';
-            bgCtx.fillRect(0, 0, bgCanvas.width, bgCanvas.height);
-
-            // Draw nebula
-            bgCtx.save();
-            bgCtx.globalCompositeOperation = 'screen';
-            nebulae.forEach(n => {
-                const x = n.rx * bgCanvas.width;
-                const y = n.ry * bgCanvas.height;
-                const r = n.radius * Math.max(bgCanvas.width, bgCanvas.height);
-                const grad = bgCtx.createRadialGradient(x, y, 0, x, y, r);
-                grad.addColorStop(0, n.color);
-                grad.addColorStop(0.5, n.color.replace('0.', '0.0'));
-                grad.addColorStop(1, 'rgba(0,0,0,0)');
-                bgCtx.fillStyle = grad;
+            const isLight = document.documentElement.getAttribute('data-theme') === 'light';
+            if (isLight) {
+                // Soft cream sunset backdrop
+                bgCtx.fillStyle = '#fff9f6';
                 bgCtx.fillRect(0, 0, bgCanvas.width, bgCanvas.height);
-            });
-            bgCtx.restore();
 
-            // Draw stars with shimmer
-            bgCtx.fillStyle = '#ffffff';
-            stars.forEach((s, idx) => {
-                const pulse = 0.5 + 0.5 * Math.sin(time * 3.0 + idx);
-                bgCtx.globalAlpha = s.opacity * pulse;
-                bgCtx.fillRect(s.x, s.y, s.size, s.size);
-            });
-            bgCtx.globalAlpha = 1.0;
+                bgCtx.save();
+                bgCtx.globalCompositeOperation = 'multiply';
+                nebulae.forEach(n => {
+                    const x = n.rx * bgCanvas.width;
+                    const y = n.ry * bgCanvas.height;
+                    const r = n.radius * Math.max(bgCanvas.width, bgCanvas.height);
+                    const grad = bgCtx.createRadialGradient(x, y, 0, x, y, r);
+                    
+                    let lightColor;
+                    if (n.color.includes('rgba(0, 119, 255')) {
+                        lightColor = 'rgba(255, 182, 193, 0.12)';
+                    } else if (n.color.includes('rgba(168, 85, 247')) {
+                        lightColor = 'rgba(255, 222, 173, 0.12)';
+                    } else {
+                        lightColor = 'rgba(255, 239, 204, 0.12)';
+                    }
+                    grad.addColorStop(0, lightColor);
+                    grad.addColorStop(0.5, lightColor.replace('0.12', '0.04'));
+                    grad.addColorStop(1, 'rgba(255,255,255,0)');
+                    bgCtx.fillStyle = grad;
+                    bgCtx.fillRect(0, 0, bgCanvas.width, bgCanvas.height);
+                });
+                bgCtx.restore();
+
+                // Warm sunset stars
+                bgCtx.fillStyle = '#ff8c00';
+                stars.forEach((s, idx) => {
+                    const pulse = 0.5 + 0.5 * Math.sin(time * 3.0 + idx);
+                    bgCtx.globalAlpha = s.opacity * pulse * 0.35;
+                    bgCtx.fillRect(s.x, s.y, s.size * 1.5, s.size * 1.5);
+                });
+                bgCtx.globalAlpha = 1.0;
+            } else {
+                // Dark mode original drawing
+                bgCtx.fillStyle = '#020308';
+                bgCtx.fillRect(0, 0, bgCanvas.width, bgCanvas.height);
+
+                bgCtx.save();
+                bgCtx.globalCompositeOperation = 'screen';
+                nebulae.forEach(n => {
+                    const x = n.rx * bgCanvas.width;
+                    const y = n.ry * bgCanvas.height;
+                    const r = n.radius * Math.max(bgCanvas.width, bgCanvas.height);
+                    const grad = bgCtx.createRadialGradient(x, y, 0, x, y, r);
+                    grad.addColorStop(0, n.color);
+                    grad.addColorStop(0.5, n.color.replace('0.', '0.0'));
+                    grad.addColorStop(1, 'rgba(0,0,0,0)');
+                    bgCtx.fillStyle = grad;
+                    bgCtx.fillRect(0, 0, bgCanvas.width, bgCanvas.height);
+                });
+                bgCtx.restore();
+
+                bgCtx.fillStyle = '#ffffff';
+                stars.forEach((s, idx) => {
+                    const pulse = 0.5 + 0.5 * Math.sin(time * 3.0 + idx);
+                    bgCtx.globalAlpha = s.opacity * pulse;
+                    bgCtx.fillRect(s.x, s.y, s.size, s.size);
+                });
+                bgCtx.globalAlpha = 1.0;
+            }
         }
 
         // ── 2. THREE.JS 3D DNA/RNA HELIX ──
@@ -298,20 +330,23 @@ function HistoryPage({
 
         // Reflection Map
         function generateReflectionMap() {
+            const isLight = document.documentElement.getAttribute('data-theme') === 'light';
             const canvas = document.createElement('canvas');
             canvas.width = 512;
             canvas.height = 256;
             const ctx = canvas.getContext('2d');
-            ctx.fillStyle = '#02040c';
+            ctx.fillStyle = isLight ? '#fff6f0' : '#02040c';
             ctx.fillRect(0, 0, 512, 256);
             for (let i = 0; i < 8; i++) {
                 const x = Math.random() * 512;
                 const y = Math.random() * 256;
                 const r = 60 + Math.random() * 100;
                 const grad = ctx.createRadialGradient(x, y, 0, x, y, r);
-                const col = Math.random() < 0.5 ? 'rgba(0, 119, 255, 0.25)' : 'rgba(168, 85, 247, 0.25)';
+                const col = isLight 
+                    ? (Math.random() < 0.5 ? 'rgba(255, 105, 180, 0.15)' : 'rgba(255, 165, 0, 0.15)')
+                    : (Math.random() < 0.5 ? 'rgba(0, 119, 255, 0.25)' : 'rgba(168, 85, 247, 0.25)');
                 grad.addColorStop(0, col);
-                grad.addColorStop(1, 'rgba(0,0,0,0)');
+                grad.addColorStop(1, isLight ? 'rgba(255,255,255,0)' : 'rgba(0,0,0,0)');
                 ctx.fillStyle = grad;
                 ctx.fillRect(0, 0, 512, 256);
             }
@@ -996,7 +1031,7 @@ function HistoryPage({
                         {/* Padded Top Spacer to allow first element centering */}
                         <div className="timeline-top-spacer" />
 
-                        {selectedSession.messages.map((msg, index) => {
+                        {selectedSession.messages.map((msg) => {
                             const isFocused = focusedMsgId === String(msg.id);
 
                             return (

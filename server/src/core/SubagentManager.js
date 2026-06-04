@@ -12,7 +12,7 @@ export class SubagentManager {
      * @param {string} systemPrompt
      * @returns {Promise<Array<{id: string, result: string, error?: string}>>}
      */
-    async executeParallel(tasks, model = MODELS.COMPLEX, systemPrompt = 'You are a parallel subagent.') {
+    async executeParallel(tasks, model = MODELS.COMPLEX, signal = null, systemPrompt = 'You are a parallel subagent.') {
         if (!tasks || !tasks.length) return [];
         
         Logger.stage('Subagents', `Spawning ${tasks.length} parallel subagents on model ${model}...`);
@@ -20,13 +20,16 @@ export class SubagentManager {
         const promises = tasks.map(async (task) => {
             const start = Date.now();
             try {
+                if (signal?.aborted) {
+                    throw new Error('Subagent execution aborted');
+                }
                 Logger.debug(`[Subagent ${task.id}] Started: "${task.prompt.slice(0, 50)}..."`);
                 const msgs = [
                     { role: 'system', content: systemPrompt },
                     { role: 'user', content: task.prompt }
                 ];
                 // Subagents do not stream to stdout to prevent mangling
-                const result = await callOllama(msgs, model, false);
+                const result = await callOllama(msgs, model, false, signal);
                 const ms = Date.now() - start;
                 Logger.debug(`[Subagent ${task.id}] Completed in ${ms}ms`);
                 return { id: task.id, result };

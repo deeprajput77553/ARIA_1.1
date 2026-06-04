@@ -41,11 +41,18 @@ export function extractJson(text) {
 }
 
 // ── Non-streaming call (JSON mode) ─────────────────────────────────────────
-export async function callOllama(messages, model = MODELS.REACTIVE, jsonFormat = false) {
+export async function callOllama(messages, model = MODELS.REACTIVE, jsonFormat = false, signal = null) {
     const payload    = { model, messages, stream: false };
     if (jsonFormat) payload.format = 'json';
     const controller = new AbortController();
     const timer      = setTimeout(() => controller.abort(), 120_000);
+    if (signal) {
+        if (signal.aborted) {
+            controller.abort();
+        } else {
+            signal.addEventListener('abort', () => controller.abort());
+        }
+    }
     try {
         const res = await fetch(OLLAMA_URL, {
             method: 'POST',
@@ -67,10 +74,17 @@ export async function callOllama(messages, model = MODELS.REACTIVE, jsonFormat =
 }
 
 // ── Streaming call — emits tokens in real-time ──────────────────────────────
-export async function callOllamaStream(messages, model = MODELS.REACTIVE, onToken = null) {
+export async function callOllamaStream(messages, model = MODELS.REACTIVE, onToken = null, signal = null) {
     const payload = { model, messages, stream: true };
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 180_000);
+    if (signal) {
+        if (signal.aborted) {
+            controller.abort();
+        } else {
+            signal.addEventListener('abort', () => controller.abort());
+        }
+    }
 
     try {
         const res = await fetch(OLLAMA_URL, {
@@ -133,10 +147,10 @@ export async function callOllamaStream(messages, model = MODELS.REACTIVE, onToke
 }
 
 // ── Convenience model wrappers ──────────────────────────────────────────────
-export const routerModel   = (msgs, json = true) => callOllama(msgs, MODELS.ROUTER,   json);
-export const reactModel    = (msgs)              => callOllamaStream(msgs, MODELS.REACTIVE);
-export const complexModel  = (msgs, json = true) => callOllama(msgs, MODELS.COMPLEX,  json);
-export const verifyModel   = (msgs)              => callOllama(msgs, MODELS.VERIFY,   false);
+export const routerModel   = (msgs, json = true, signal = null) => callOllama(msgs, MODELS.ROUTER,   json, signal);
+export const reactModel    = (msgs, signal = null)              => callOllamaStream(msgs, MODELS.REACTIVE, null, signal);
+export const complexModel  = (msgs, json = true, signal = null) => callOllama(msgs, MODELS.COMPLEX,  json, signal);
+export const verifyModel   = (msgs, signal = null)              => callOllama(msgs, MODELS.VERIFY,   false, signal);
 
 // ── Output Stage ────────────────────────────────────────────────────────────
 export class OutputLayer {

@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { Send, Sparkles, MessageSquare, Database, GitBranch, Cpu, Eye, CheckCircle2, ChevronDown, Bot, User, RefreshCw, X, Copy, Trash2, Edit3, RotateCcw, Check, Plus, History } from 'lucide-react';
+import { Send, Sparkles, MessageSquare, Database, GitBranch, Cpu, Eye, CheckCircle2, ChevronDown, Bot, User, RefreshCw, X, Copy, Trash2, Edit3, RotateCcw, Check, Plus, History, Download, Printer, ZoomIn, ZoomOut, FileText } from 'lucide-react';
 
 function ChatPage({ 
     messages, 
@@ -16,6 +16,8 @@ function ChatPage({
     const [expandedPipelines, setExpandedPipelines] = useState({});
     const [previewFile, setPreviewFile] = useState(null); // { name: '...', url: '...' }
     const [loadingPreview, setLoadingPreview] = useState(false);
+    const [zoom, setZoom] = useState(100);
+    const [paperTheme, setPaperTheme] = useState('light');
     
     // Message Action States
     const [editingMessageId, setEditingMessageId] = useState(null);
@@ -86,38 +88,133 @@ function ChatPage({
             return '';
         }
 
-        // Determine base API URL for files
         const isDev = window.location.hostname === 'localhost' && window.location.port !== '4200';
         const apiBase = isDev ? 'http://localhost:4200' : window.location.origin;
 
-        // Find matches for images: e.g. "images/gen_..." or "images/image_..."
         const imgRegex = /images\/[a-zA-Z0-9_\-]+\.png/g;
         const imagesFound = [...new Set([...msg.text.matchAll(imgRegex)].map(m => m[0]))];
 
-        // Find matches for docx files: e.g. "document.docx" or similar
         const docxRegex = /\b[a-zA-Z0-9_\-]+\.docx\b/g;
         const docxFound = [...new Set([...msg.text.matchAll(docxRegex)].map(m => m[0]))];
         
-        // Find matches for md files (excluding plan.md)
         const mdRegex = /\b[a-zA-Z0-9_\-]+\.md\b/g;
         const mdFound = [...new Set([...msg.text.matchAll(mdRegex)].map(m => m[0]))].filter(f => f !== 'plan.md' && f !== 'README.md');
 
-        // Render standard text, but if we found images or files, append them below
-        let formattedText = msg.text;
-        
-        // Basic Markdown replacement for displaying bold/lists nicely in plain text
-        const lines = formattedText.split('\n').map((line, idx) => {
-            let processed = line;
-            processed = processed.replace(/\*\*(.*?)\*\*/g, '$1');
-            processed = processed.replace(/`(.*?)`/g, '$1');
-            return <div key={idx} className="chat-text-line">{processed}</div>;
-        });
+        const renderLineInline = (str) => {
+            const regex = /(!\[.*?\]\(.*?\))|(\[.*?\]\(.*?\))|(\*\*.*?\*\*)|(`.*?`)/g;
+            const parts = str.split(regex);
+            
+            return parts.map((part, partIdx) => {
+                if (!part) return null;
+                
+                // 1. Scraped Web Image
+                if (part.startsWith('![') && part.endsWith(')')) {
+                    const imgMatch = part.match(/!\[(.*?)\]\((.*?)\)/);
+                    if (imgMatch) {
+                        const alt = imgMatch[1];
+                        const url = imgMatch[2];
+                        return (
+                            <div key={partIdx} className="scraped-image-card-inline">
+                                <div className="scraped-image-wrapper">
+                                    <img 
+                                        src={url} 
+                                        alt={alt} 
+                                        className="scraped-image-element" 
+                                        onError={(e) => {
+                                            e.target.style.display = 'none';
+                                            e.target.nextSibling.style.display = 'flex';
+                                        }} 
+                                    />
+                                    <div className="scraped-image-error" style={{ display: 'none' }}>
+                                        <span>Failed to load image</span>
+                                    </div>
+                                </div>
+                                <div className="scraped-image-title">{alt || 'Scraped Image'}</div>
+                            </div>
+                        );
+                    }
+                }
+                
+                // 2. Clickable Web Link
+                if (part.startsWith('[') && part.endsWith(')')) {
+                    const linkMatch = part.match(/\[(.*?)\]\((.*?)\)/);
+                    if (linkMatch) {
+                        const label = linkMatch[1];
+                        const url = linkMatch[2];
+                        return (
+                            <a 
+                                key={partIdx} 
+                                href={url} 
+                                target="_blank" 
+                                rel="noopener noreferrer" 
+                                className="scraped-link-element"
+                            >
+                                {label}
+                            </a>
+                        );
+                    }
+                }
+                
+                // 3. Bold Text
+                if (part.startsWith('**') && part.endsWith('**')) {
+                    return <strong key={partIdx} className="md-bold">{part.slice(2, -2)}</strong>;
+                }
+                
+                // 4. Inline Code
+                if (part.startsWith('`') && part.endsWith('`')) {
+                    return <code key={partIdx} className="md-inline-code">{part.slice(1, -1)}</code>;
+                }
+                
+                // Plain Text
+                return <span key={partIdx}>{part}</span>;
+            });
+        };
+
+        const parseMarkdownToReact = (text) => {
+            const lines = text.split('\n');
+            return lines.map((line, lineIdx) => {
+                // Headers
+                if (line.startsWith('### ')) {
+                    return <h4 key={lineIdx} className="md-h4">{renderLineInline(line.slice(4))}</h4>;
+                }
+                if (line.startsWith('## ')) {
+                    return <h3 key={lineIdx} className="md-h3">{renderLineInline(line.slice(3))}</h3>;
+                }
+                if (line.startsWith('# ')) {
+                    return <h2 key={lineIdx} className="md-h2">{renderLineInline(line.slice(2))}</h2>;
+                }
+                
+                // Lists
+                if (line.startsWith('- ') || line.startsWith('* ')) {
+                    return (
+                        <div key={lineIdx} className="md-list-item">
+                            <span className="md-bullet">•</span>
+                            <span className="md-list-text">{renderLineInline(line.slice(2))}</span>
+                        </div>
+                    );
+                }
+                
+                const numListMatch = line.match(/^(\d+)\.\s(.*)/);
+                if (numListMatch) {
+                    const num = numListMatch[1];
+                    const content = numListMatch[2];
+                    return (
+                        <div key={lineIdx} className="md-list-item numbered">
+                            <span className="md-number">{num}.</span>
+                            <span className="md-list-text">{renderLineInline(content)}</span>
+                        </div>
+                    );
+                }
+                
+                return <div key={lineIdx} className="chat-text-line">{renderLineInline(line)}</div>;
+            });
+        };
 
         return (
             <div className="rendered-message-body">
-                <div className="message-text-paragraphs">{lines}</div>
+                <div className="message-text-paragraphs">{parseMarkdownToReact(msg.text)}</div>
                 
-                {/* Render Images if found */}
+                {/* Render local NVIDIA FLUX generated images */}
                 {imagesFound.length > 0 && (
                     <div className="generated-images-gallery">
                         {imagesFound.map((imgName, idx) => {
@@ -152,7 +249,7 @@ function ChatPage({
                     </div>
                 )}
 
-                {/* Render DOCX Files if found */}
+                {/* Render docx files */}
                 {docxFound.length > 0 && (
                     <div className="generated-files-list">
                         {docxFound.map((fileName, idx) => {
@@ -189,7 +286,7 @@ function ChatPage({
                     </div>
                 )}
                 
-                {/* Render MD Files if found */}
+                {/* Render md files */}
                 {mdFound.length > 0 && (
                     <div className="generated-files-list">
                         {mdFound.map((fileName, idx) => {
@@ -250,6 +347,8 @@ function ChatPage({
         // Append user prompt and placeholder for AI streaming
         setMessages(prev => [...prev, userMsg, pendingAiMsg]);
 
+        window.playUISound('send');
+
         // Transmit via WS to Node backend
         wsRef.current.send(JSON.stringify({
             type: 'chat:message',
@@ -260,12 +359,23 @@ function ChatPage({
     };
 
     const handleStopResponse = () => {
+        window.playUISound('error');
+
         // Cancel Speech Synthesis (in case TTS is active)
         if (typeof window !== 'undefined' && window.speechSynthesis) {
             window.speechSynthesis.cancel();
         }
 
-        // Finalize pending AI message
+        // Send explicit stop command to backend
+        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+            try {
+                wsRef.current.send(JSON.stringify({ type: 'chat:stop' }));
+            } catch (err) {
+                console.warn("[WebSocket] Failed to send chat:stop:", err);
+            }
+        }
+
+        // Finalize pending AI message and reset its pipeline state locally
         setMessages(prev => {
             const pendingIdx = prev.findIndex(m => m.id === 'ai-pending');
             if (pendingIdx === -1) return prev;
@@ -275,13 +385,18 @@ function ChatPage({
             updated[pendingIdx] = {
                 ...pendingMsg,
                 id: Date.now() + Math.random(),
-                text: finalizedText
+                text: finalizedText,
+                pipeline: {
+                    input: { status: 'done', detail: 'Stopped', badge: 'IDLE' },
+                    context: { status: '', detail: '-', badge: '-' },
+                    router: { status: '', detail: '-', badge: '-' },
+                    exec: { status: '', detail: '-', badge: '-' },
+                    reflect: { status: '', detail: '-', badge: '-' },
+                    output: { status: '', detail: '-', badge: '-' }
+                }
             };
             return updated;
         });
-
-        // Trigger socket reconnection to abort generation immediately
-        window.dispatchEvent(new CustomEvent('system:reconnect_ws'));
     };
 
     const handleKeyDown = (e) => {
@@ -682,30 +797,109 @@ function ChatPage({
 
             {/* Document Preview Modal */}
             {previewFile && (
-                <div className="docx-preview-modal-overlay" onClick={() => setPreviewFile(null)}>
+                <div className="docx-preview-modal-overlay" onClick={() => { setPreviewFile(null); setZoom(100); setPaperTheme('light'); }} style={{ zIndex: 100 }}>
                     <div className="docx-preview-modal-content" onClick={(e) => e.stopPropagation()}>
                         <div className="docx-preview-modal-header">
                             <div className="modal-title-group">
-                                <Database className="modal-docx-icon" size={18} />
+                                <FileText className="modal-docx-icon" size={18} />
                                 <span className="modal-filename">{previewFile.name}</span>
                             </div>
+                            
+                            {/* Sticky Premium Reading Controls */}
+                            <div className="modal-reading-controls">
+                                <button className="control-btn-preview" onClick={() => setZoom(prev => Math.max(50, prev - 10))} title="Zoom Out">
+                                    <ZoomOut size={14} />
+                                </button>
+                                <span className="zoom-level-text">{zoom}%</span>
+                                <button className="control-btn-preview" onClick={() => setZoom(prev => Math.min(200, prev + 10))} title="Zoom In">
+                                    <ZoomIn size={14} />
+                                </button>
+                                <button className="control-btn-preview" onClick={() => setZoom(100)} title="Reset Zoom">
+                                    100%
+                                </button>
+                                
+                                <div className="control-divider" />
+                                
+                                <button 
+                                    className={`theme-dot light ${paperTheme === 'light' ? 'active' : ''}`} 
+                                    onClick={() => setPaperTheme('light')} 
+                                    title="Light Theme" 
+                                />
+                                <button 
+                                    className={`theme-dot sepia ${paperTheme === 'sepia' ? 'active' : ''}`} 
+                                    onClick={() => setPaperTheme('sepia')} 
+                                    title="Sepia Theme" 
+                                />
+                                <button 
+                                    className={`theme-dot dark ${paperTheme === 'dark' ? 'active' : ''}`} 
+                                    onClick={() => setPaperTheme('dark')} 
+                                    title="Dark Theme" 
+                                />
+                                
+                                <div className="control-divider" />
+                                
+                                <button 
+                                    className="control-btn-preview" 
+                                    onClick={() => {
+                                        const content = previewContainerRef.current?.innerHTML;
+                                        if (!content) return;
+                                        const printWindow = window.open('', '_blank');
+                                        printWindow.document.write(`
+                                            <html>
+                                                <head>
+                                                    <title>${previewFile.name}</title>
+                                                    <style>
+                                                        body {
+                                                            font-family: Calibri, Arial, sans-serif;
+                                                            padding: 40px;
+                                                            color: #2D3748;
+                                                        }
+                                                        table {
+                                                            border-collapse: collapse;
+                                                            width: 100%;
+                                                            margin: 16px 0;
+                                                        }
+                                                        th, td {
+                                                            border: 1px solid #D2D6DC;
+                                                            padding: 8px 12px;
+                                                        }
+                                                        th {
+                                                            background-color: #1A365D;
+                                                            color: white;
+                                                            font-weight: bold;
+                                                        }
+                                                    </style>
+                                                </head>
+                                                <body onload="window.print(); window.close();">
+                                                    ${content}
+                                                </body>
+                                            </html>
+                                        `);
+                                        printWindow.document.close();
+                                    }} 
+                                    title="Print Document"
+                                >
+                                    <Printer size={14} />
+                                </button>
+                            </div>
+
                             <div className="modal-header-actions">
                                 <a href={previewFile.url} download className="modal-btn" title="Download Document">
-                                    <Send size={16} style={{ transform: 'rotate(90deg)' }} />
+                                    <Download size={16} />
                                 </a>
-                                <button className="modal-btn close-btn" onClick={() => setPreviewFile(null)} title="Close Preview">
+                                <button className="modal-btn close-btn" onClick={() => { setPreviewFile(null); setZoom(100); setPaperTheme('light'); }} title="Close Preview">
                                     <X size={16} />
                                 </button>
                             </div>
                         </div>
-                        <div className="docx-preview-modal-body">
+                        <div className={`docx-preview-modal-body paper-theme-${paperTheme}`}>
                             {loadingPreview && (
                                 <div className="modal-loading-overlay">
                                     <RefreshCw className="modal-loading-spinner spin" size={24} />
                                     <span className="modal-loading-text">Loading document preview...</span>
                                 </div>
                             )}
-                            <div className="docx-viewer-output-wrapper">
+                            <div className="docx-viewer-output-wrapper" style={{ width: `${800 * (zoom / 100)}px`, maxWidth: '100%' }}>
                                 <div ref={previewContainerRef}></div>
                             </div>
                         </div>

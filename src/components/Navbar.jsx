@@ -1,10 +1,10 @@
-import { MessageSquare, LayoutDashboard, History, Settings, Rocket, Wifi, WifiOff, Radio } from 'lucide-react';
+import { MessageSquare, Cpu, History, Settings, Rocket, Wifi, WifiOff, Radio } from 'lucide-react';
 
 function Navbar({ activePage, setActivePage, connected, workspaceDir }) {
     const navItems = [
         { id: 'orb', label: 'Orb', icon: <Radio size={18} /> },
         { id: 'chat', label: 'Messages', icon: <MessageSquare size={18} /> },
-        { id: 'dashboard', label: 'Monitor', icon: <LayoutDashboard size={18} /> },
+        { id: 'workbench', label: 'Workbench', icon: <Cpu size={18} /> },
         { id: 'history', label: 'Traces & History', icon: <History size={18} /> },
         { id: 'settings', label: 'Settings', icon: <Settings size={18} /> }
     ];
@@ -20,7 +20,10 @@ function Navbar({ activePage, setActivePage, connected, workspaceDir }) {
                     <button
                         key={item.id}
                         className={`navbar-item ${activePage === item.id ? 'active' : ''}`}
-                        onClick={() => setActivePage(item.id)}
+                        onClick={() => {
+                            window.playUISound('click');
+                            setActivePage(item.id);
+                        }}
                     >
                         <span className="navbar-icon">{item.icon}</span>
                         <span className="navbar-label">{item.label}</span>
