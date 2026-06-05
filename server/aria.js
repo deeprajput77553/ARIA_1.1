@@ -109,6 +109,25 @@ function listWorkspaceFiles(dir, baseDir) {
     return results;
 }
 
+function findFileRecursively(dir, fileName) {
+    try {
+        const entries = fs.readdirSync(dir, { withFileTypes: true });
+        for (const entry of entries) {
+            const fullPath = path.join(dir, entry.name);
+            if (entry.isDirectory()) {
+                if (['node_modules', '.git', '.gemini', 'dist', 'build', 'public/assets'].includes(entry.name)) continue;
+                const found = findFileRecursively(fullPath, fileName);
+                if (found) return found;
+            } else if (entry.isFile() && entry.name === fileName) {
+                return fullPath;
+            }
+        }
+    } catch (e) {
+        console.error("[findFileRecursively] error:", e.message);
+    }
+    return null;
+}
+
 async function handleClientMessage(socket, rawText) {
     try {
         console.log("[WebSocket] Raw text received from client:", rawText);
@@ -450,8 +469,17 @@ function startDashboard() {
                     return;
                 }
                 
-                if (fs.existsSync(targetPath) && fs.statSync(targetPath).isFile()) {
-                    const ext = path.extname(targetPath).toLowerCase();
+                let finalPath = targetPath;
+                if (!fs.existsSync(finalPath) || !fs.statSync(finalPath).isFile()) {
+                    const filename = path.basename(relativePath);
+                    const foundPath = findFileRecursively(WORKSPACE_DIR, filename);
+                    if (foundPath && foundPath.startsWith(safeBase)) {
+                        finalPath = foundPath;
+                    }
+                }
+                
+                if (fs.existsSync(finalPath) && fs.statSync(finalPath).isFile()) {
+                    const ext = path.extname(finalPath).toLowerCase();
                     let contentType = 'application/octet-stream';
                     let headers = {};
                     
@@ -464,11 +492,11 @@ function startDashboard() {
                     
                     // If it is a docx document or markdown file, download as attachment
                     if (ext === '.docx' || ext === '.md' || ext === '.pdf' || ext === '.txt') {
-                        headers['Content-Disposition'] = `attachment; filename="${path.basename(targetPath)}"`;
+                        headers['Content-Disposition'] = `attachment; filename="${path.basename(finalPath)}"`;
                     }
                     
                     res.writeHead(200, headers);
-                    fs.createReadStream(targetPath).pipe(res);
+                    fs.createReadStream(finalPath).pipe(res);
                 } else {
                     res.writeHead(404);
                     res.end('File Not Found');

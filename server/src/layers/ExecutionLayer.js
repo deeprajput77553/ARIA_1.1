@@ -779,7 +779,7 @@ Instructions:
 1. Write rich, detailed content for this section.
 2. Use paragraph text, lists, and tables where appropriate.
 3. Do not add page titles, introductory document headers, or concluding sections unless they are specifically part of this section.
-4. Determine if a diagram, visual illustration, or concept chart would help explain the concepts in this section. If so, write a highly descriptive prompt for an image generator (like FLUX) to create a clean, professional diagram or chart.
+4. You MUST design a diagram, visual illustration, or concept chart to help explain the concepts in this section. Write a highly descriptive prompt for an image generator (like FLUX) to create a clean, professional diagram or chart. Do not use null.
    - ABSOLUTELY NO text labels, words, or letters in the diagram (always use simple shapes, lines, and symbolic icons instead to avoid garbled AI text).
    - Use concrete visual metaphors (e.g., a shield for security/fraud, a magnifying glass for search, a brain for processing, a speech bubble for NLP) rather than abstract flowcharts with labeled nodes.
    - Focus on style descriptors: "Vibrant modern volumetric 3D infographic illustration, high-fidelity technology diagram. Sleek corporate tech design with rich details, smooth gradients, glossy reflections, professional studio lighting, clean light gray background. No text."
@@ -792,7 +792,7 @@ Instructions:
 {
   "topic": "${topic.title}",
   "body": "detailed content paragraph(s)",
-  "image_prompt": "highly detailed image generation prompt, or null if no diagram/image is needed"
+  "image_prompt": "highly detailed image generation prompt (this field MUST NOT be null)"
 }
 `;
 
@@ -872,6 +872,7 @@ import shutil
 import urllib.request
 import base64
 import concurrent.futures
+import ssl
 from html.parser import HTMLParser
 from docx import Document
 from docx.shared import Inches, Pt, RGBColor
@@ -957,7 +958,8 @@ def generate_image(prompt, api_key):
                 },
                 method='POST'
             )
-            with urllib.request.urlopen(req, timeout=45) as response:
+            context = ssl._create_unverified_context()
+            with urllib.request.urlopen(req, timeout=45, context=context) as response:
                 if response.status == 200:
                     res_data = json.loads(response.read().decode('utf-8'))
                     artifacts = res_data.get("artifacts", [])
@@ -1470,19 +1472,18 @@ def compile():
             print(f"Generating diagram in parallel for section: {topic['title']}...")
             img_data = generate_image(img_prompt, api_key)
             if img_data:
-                temp_img_path = f"temp/image_{idx}.png"
                 final_img_path = f"images/image_{idx}.png"
-                with open(temp_img_path, 'wb') as img_f:
+                with open(final_img_path, 'wb') as img_f:
                     img_f.write(img_data)
-                return idx, temp_img_path, final_img_path
-        return idx, None, None
+                return idx, final_img_path
+        return idx, None
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
         futures = [executor.submit(fetch_and_save_image, idx, topic) for idx, topic in enumerate(data['topics'])]
         for future in concurrent.futures.as_completed(futures):
-            res_idx, temp_path, final_path = future.result()
-            if temp_path:
-                image_results[res_idx] = (temp_path, final_path)
+            res_idx, final_path = future.result()
+            if final_path:
+                image_results[res_idx] = final_path
 
     # 4. Content loop
     for i, topic in enumerate(data['topics']):
@@ -1506,7 +1507,7 @@ def compile():
         
         # Insert image if successfully generated in parallel
         if i in image_results:
-            temp_img_path, final_img_path = image_results[i]
+            final_img_path = image_results[i]
             # Add picture inline
             img_p = doc.add_paragraph()
             img_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -1514,7 +1515,7 @@ def compile():
             img_p.paragraph_format.space_after = Pt(6)
             
             run = img_p.add_run()
-            run.add_picture(temp_img_path, width=Inches(5.5))
+            run.add_picture(final_img_path, width=Inches(5.5))
             
             # Add caption
             cap_p = doc.add_paragraph()
@@ -1524,12 +1525,6 @@ def compile():
             cap_run.font.size = Pt(9.5)
             cap_run.font.italic = True
             cap_run.font.color.rgb = theme["secondary"]
-            
-            # Move to final images folder
-            try:
-                shutil.move(temp_img_path, final_img_path)
-            except Exception as me:
-                print(f"Failed to move image: {me}")
                 
     filename = data.get('filename', 'document.docx')
     doc.save(filename)
